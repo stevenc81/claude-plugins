@@ -17,9 +17,12 @@ export function loadTemplate(name) {
   return fs.readFileSync(filePath, "utf8");
 }
 
+export function schemaPath(schemaName = "review-output") {
+  return path.join(SCHEMAS_DIR, `${schemaName}.schema.json`);
+}
+
 export function loadSchemaText(schemaName = "review-output") {
-  const filePath = path.join(SCHEMAS_DIR, `${schemaName}.schema.json`);
-  return fs.readFileSync(filePath, "utf8").trimEnd();
+  return fs.readFileSync(schemaPath(schemaName), "utf8").trimEnd();
 }
 
 export function renderPrompt(name, vars = {}) {

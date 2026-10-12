@@ -1,7 +1,13 @@
 import { test, beforeEach, afterEach } from "node:test";
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { handleReview, setRunReviewForTest } from "../plugins/gemini/scripts/gemini-companion.mjs";
-import { ConfigError, AgyAuthError, AgyConnectionError } from "../plugins/gemini/scripts/lib/errors.mjs";
+import {
+  ConfigError,
+  AgyAuthError,
+  AgyConnectionError,
+  AgyModelError
+} from "../plugins/gemini/scripts/lib/errors.mjs";
 
 function captureStdout(fn) {
   const chunks = [];
@@ -42,11 +48,12 @@ const okPayload = {
     ],
     reasoning_issues: []
   }),
-  // agy --print exposes no runtime model, token usage, or tool calls.
+  response: "",
   model: null,
-  tokens: null,
-  agentVersion: "1.0.0",
-  toolCalls: []
+  tokens: { input_tokens: 34702, output_tokens: 407, total_tokens: 35109 },
+  deniedActions: [],
+  timedOut: false,
+  agentVersion: "1.0.0"
 };
 
 beforeEach(() => {
@@ -76,11 +83,12 @@ test("rejects whitespace-only stdin", async () => {
   );
 });
 
-test("happy path: renders structured output with claims and sources, passes no modelId to runner", async () => {
+test("happy path: renders structured output with claims and sources, passes the schema file to the runner", async () => {
   setRunReviewForTest(async (args) => {
     assert.match(args.prompt, /content_to_review/);
     assert.match(args.prompt, /Redis is AP/);
-    assert.match(args.prompt, /google_web_search/);
+    assert.match(args.prompt, /search_web/);
+    assert.match(args.jsonSchema, /schemas[\/\\]review-output\.schema\.json$/);
     // The runner must not receive any modelId, as agy 1.0.0 ignores model selection.
     assert.equal("modelId" in args, false);
     return okPayload;
@@ -96,9 +104,10 @@ test("happy path: renders structured output with claims and sources, passes no m
   assert.match(out, /sources:/);
   assert.match(out, /https:\/\/redis\.io/);
   assert.match(out, /\[grounding\] 2 source URLs cited/);
-  assert.match(out, /agy --print/);
+  assert.match(out, /tokens: 34702 in \/ 407 out/);
+  assert.doesNotMatch(out, /refused/);
   // The hardcoded primary model is surfaced in the header.
-  assert.match(out, /model: Gemini 3\.1 Pro \(High\)/);
+  assert.match(out, /model: gemini-3\.1-pro-high/);
 });
 
 test("grounding footer warns when no tool calls AND no claim sources", async () => {
@@ -130,9 +139,12 @@ test("--json mode emits stable payload with model selection fields", async () =>
   assert.equal(payload.stopReason, "end_turn");
   assert.equal(payload.parsed.overall, "mixed");
   assert.equal(payload.parseError, null);
-  assert.deepEqual(payload.toolCalls, []);
-  assert.equal(payload.model, "Gemini 3.1 Pro (High)");
-  assert.equal(payload.requestedModel, "Gemini 3.1 Pro (High)");
+  assert.deepEqual(payload.deniedActions, []);
+  assert.equal(payload.timedOut, false);
+  assert.equal(payload.tokens.output_tokens, 407);
+  assert.equal(Object.prototype.hasOwnProperty.call(payload, "toolCalls"), false);
+  assert.equal(payload.model, "gemini-3.1-pro-high");
+  assert.equal(payload.requestedModel, "gemini-3.1-pro-high");
   assert.equal(payload.fellBack, false);
   assert.equal(Object.prototype.hasOwnProperty.call(payload, "downgraded"), false);
 });
@@ -203,12 +215,12 @@ test("truncation footer shown in rendered mode", async () => {
   assert.match(out, /Input was truncated by/);
 });
 
-test("header shows agy version and no model line", async () => {
+test("header shows the agy version and the model", async () => {
   setRunReviewForTest(async () => okPayload);
   const out = await captureStdout(() => handleReview([], { stdin: "claim body" }));
   assert.match(out, /agy 1\.0\.0/);
   // The plugin now selects the model, so the header names it.
-  assert.match(out, /model: Gemini 3\.1 Pro \(High\)/);
+  assert.match(out, /model: gemini-3\.1-pro-high/);
   assert.doesNotMatch(out, /downgraded from/i);
 });
 
@@ -221,30 +233,30 @@ test("rejects --model flag (no longer supported)", async () => {
   );
 });
 
-test("uses Gemini 3.1 Pro (High) as the primary model and surfaces it in the header", async () => {
+test("uses gemini-3.1-pro-high as the primary model and surfaces it in the header", async () => {
   let usedModel;
   setRunReviewForTest(async (args) => {
     usedModel = args.model;
     return { ...okPayload, model: args.model };
   });
   const out = await captureStdout(() => handleReview([], { stdin: "a claim to check" }));
-  assert.equal(usedModel, "Gemini 3.1 Pro (High)");
-  assert.match(out, /model: Gemini 3\.1 Pro \(High\)/);
+  assert.equal(usedModel, "gemini-3.1-pro-high");
+  assert.match(out, /model: gemini-3\.1-pro-high/);
 });
 
-test("falls back to Gemini 3.5 Flash (High) when the primary model fails", async () => {
+test("falls back to gemini-3.8-flash-high when the primary model fails", async () => {
   const calls = [];
   setRunReviewForTest(async (args) => {
     calls.push(args.model);
-    if (args.model === "Gemini 3.1 Pro (High)") {
+    if (args.model === "gemini-3.1-pro-high") {
       throw new AgyConnectionError("primary model unavailable");
     }
     return { ...okPayload, model: args.model };
   });
   const out = await captureStdout(() => handleReview([], { stdin: "a claim to check" }));
-  assert.deepEqual(calls, ["Gemini 3.1 Pro (High)", "Gemini 3.5 Flash (High)"]);
-  assert.match(out, /model: Gemini 3\.5 Flash \(High\)/);
-  assert.match(out, /fell back from Gemini 3\.1 Pro \(High\)/);
+  assert.deepEqual(calls, ["gemini-3.1-pro-high", "gemini-3.8-flash-high"]);
+  assert.match(out, /model: gemini-3\.8-flash-high/);
+  assert.match(out, /fell back from gemini-3\.1-pro-high/);
 });
 
 test("does not fall back on an auth error; surfaces it after a single attempt", async () => {
@@ -257,5 +269,162 @@ test("does not fall back on an auth error; surfaces it after a single attempt", 
     () => handleReview([], { stdin: "a claim to check" }),
     (err) => err instanceof AgyAuthError
   );
-  assert.deepEqual(calls, ["Gemini 3.1 Pro (High)"]);
+  assert.deepEqual(calls, ["gemini-3.1-pro-high"]);
+});
+
+test("falls back when agy does not know the primary model", async () => {
+  const calls = [];
+  setRunReviewForTest(async (args) => {
+    calls.push(args.model);
+    if (args.model === "gemini-3.1-pro-high") {
+      throw new AgyModelError('agy does not know the model "gemini-3.1-pro-high".');
+    }
+    return { ...okPayload, model: args.model };
+  });
+  await captureStdout(() => handleReview([], { stdin: "a claim to check" }));
+  assert.deepEqual(calls, ["gemini-3.1-pro-high", "gemini-3.8-flash-high"]);
+});
+
+test("empty output with refused tools names the tools instead of a bare empty-output message", async () => {
+  const deniedActions = [{ action: "read_url", display_name: "ReadUrlContent" }];
+  setRunReviewForTest(async () => ({ ...okPayload, text: "", response: "", deniedActions }));
+  const out = await captureStdout(() => handleReview([], { stdin: "x" }));
+  assert.match(out, /review \([^)]*degraded[^)]*\)/);
+  assert.match(out, /agy refused these tools: ReadUrlContent \(read_url\)/);
+
+  const json = JSON.parse(await captureStdout(() => handleReview(["--json"], { stdin: "x" })));
+  assert.equal(json.parsed, null);
+  assert.match(json.parseError, /ReadUrlContent \(read_url\)/);
+  assert.deepEqual(json.deniedActions, deniedActions);
+});
+
+test("refused tools appear in the grounding footer of a successful review", async () => {
+  const deniedActions = [{ action: "command", display_name: "RunCommand" }];
+  setRunReviewForTest(async () => ({ ...okPayload, deniedActions }));
+  const out = await captureStdout(() => handleReview([], { stdin: "x" }));
+  assert.match(out, /Overall: mixed/);
+  assert.match(out, /\[grounding\] agy refused these tools: RunCommand \(command\)\./);
+});
+
+test("a schema run without structured output keeps agy's raw response as rawOutput", async () => {
+  setRunReviewForTest(async () => ({ ...okPayload, text: "", response: "I searched but ran out of time." }));
+  const json = JSON.parse(await captureStdout(() => handleReview(["--json"], { stdin: "x" })));
+  assert.equal(json.parsed, null);
+  assert.equal(json.parseError, "Model did not return structured output.");
+  assert.equal(json.rawOutput, "I searched but ran out of time.");
+});
+
+test("a timed-out review is degraded and says it was cut off", async () => {
+  setRunReviewForTest(async () => ({
+    ...okPayload,
+    text: "",
+    response: "partial",
+    timedOut: true,
+    stopReason: "timeout",
+    tokens: null
+  }));
+  const out = await captureStdout(() => handleReview([], { stdin: "x" }));
+  assert.match(out, /review \([^)]*degraded[^)]*\)/);
+  assert.match(out, /cut the review off/);
+
+  const json = JSON.parse(await captureStdout(() => handleReview(["--json"], { stdin: "x" })));
+  assert.equal(json.timedOut, true);
+  assert.equal(json.stopReason, "timeout");
+});
+
+test("grounding redirect sources are resolved to the publisher URL", async () => {
+  const redirect = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AAA";
+  setRunReviewForTest(async () => ({
+    ...okPayload,
+    text: JSON.stringify({
+      overall: "trustworthy",
+      summary: "s",
+      claims: [{ claim: "c", verdict: "supported", reasoning: "r", sources: [redirect] }],
+      reasoning_issues: []
+    })
+  }));
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(url, redirect);
+    assert.equal(init.redirect, "manual");
+    return { status: 302, headers: new Headers({ location: "https://nodejs.org/en/about/previous-releases" }) };
+  };
+  try {
+    const out = await captureStdout(() => handleReview([], { stdin: "x" }));
+    assert.match(out, /https:\/\/nodejs\.org\/en\/about\/previous-releases/);
+    assert.doesNotMatch(out, /vertexaisearch/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("--timeout-ms beats the env var, and a bad value is rejected", async () => {
+  let seen;
+  setRunReviewForTest(async (args) => {
+    seen = args;
+    return okPayload;
+  });
+  const prev = process.env.GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS;
+  process.env.GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS = "90000";
+  try {
+    await captureStdout(() => handleReview(["--timeout-ms", "540000", "--wait"], { stdin: "x" }));
+    assert.equal(seen.promptTimeoutMs, 540000);
+    await captureStdout(() => handleReview([], { stdin: "x" }));
+    assert.equal(seen.promptTimeoutMs, 90000);
+  } finally {
+    if (prev == null) delete process.env.GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS;
+    else process.env.GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS = prev;
+  }
+  await assert.rejects(() => handleReview(["--timeout-ms", "soon"], { stdin: "x" }), ConfigError);
+});
+
+// Focus text with every shell-special character review.md must survive.
+const TRICKY_FOCUS = `check Node's "LTS" date, $HOME and \`uname\` stay literal`;
+
+test("focus text arrives as one plain argument and is never re-split", async () => {
+  let prompt;
+  setRunReviewForTest(async (args) => {
+    prompt = args.prompt;
+    return okPayload;
+  });
+  // Alone (the case the old re-splitting mangled) and after flags.
+  await captureStdout(() => handleReview([TRICKY_FOCUS], { stdin: "x" }));
+  assert.ok(prompt.includes(TRICKY_FOCUS));
+  await captureStdout(() => handleReview(["--timeout-ms", "540000", "--wait", TRICKY_FOCUS], { stdin: "x" }));
+  assert.ok(prompt.includes(TRICKY_FOCUS));
+});
+
+test("review.md's single-quote rule hands the shell's argv over unchanged", () => {
+  // Quote the way review.md tells Claude to: wrap in '...' and write ' as '\''.
+  const quoted = `'${TRICKY_FOCUS.replace(/'/g, "'\\''")}'`;
+  const out = execFileSync("/bin/sh", [
+    "-c",
+    `node -e 'console.log(JSON.stringify(process.argv.slice(1)))' -- --wait ${quoted}`
+  ], { encoding: "utf8" });
+  assert.deepEqual(JSON.parse(out), ["--wait", TRICKY_FOCUS]);
+});
+
+test("the fallback gets only the time left in the budget", async () => {
+  const timeouts = [];
+  setRunReviewForTest(async (args) => {
+    timeouts.push(args.promptTimeoutMs);
+    if (args.model === "gemini-3.1-pro-high") throw new AgyConnectionError("primary failed");
+    return { ...okPayload, model: args.model };
+  });
+  await captureStdout(() => handleReview(["--timeout-ms", "600000"], { stdin: "x" }));
+  assert.equal(timeouts[0], 600000);
+  assert.ok(timeouts[1] <= 600000 && timeouts[1] > 590000, `fallback got ${timeouts[1]}`);
+});
+
+test("the fallback is skipped, and the error says so, when under 60 s is left", async () => {
+  const calls = [];
+  setRunReviewForTest(async (args) => {
+    calls.push(args.model);
+    throw new AgyConnectionError("primary failed");
+  });
+  await assert.rejects(
+    () => handleReview(["--timeout-ms", "50000"], { stdin: "x" }),
+    (err) => /primary failed/.test(err.message) && /Skipped the fallback model 'gemini-3\.8-flash-high'/.test(err.message)
+  );
+  assert.deepEqual(calls, ["gemini-3.1-pro-high"]);
 });

@@ -17,6 +17,8 @@ export function isGroundingRedirectUrl(url) {
   );
 }
 
+// The redirect host answers HEAD with a 302 whose Location is the publisher
+// URL, so one request without following the redirect is enough.
 async function resolveOne(url, { fetchFn, timeoutMs }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -24,14 +26,16 @@ async function resolveOne(url, { fetchFn, timeoutMs }) {
   try {
     const response = await fetchFn(url, {
       method: "HEAD",
-      redirect: "follow",
+      redirect: "manual",
       signal: controller.signal
     });
-    const finalUrl = response?.url;
-    if (typeof finalUrl === "string" && finalUrl && !isGroundingRedirectUrl(finalUrl)) {
-      return finalUrl;
+    const location = response?.headers?.get?.("location");
+    if (!location) return url;
+    const finalUrl = new URL(location, url);
+    if (!/^https?:$/.test(finalUrl.protocol) || isGroundingRedirectUrl(finalUrl.href)) {
+      return url;
     }
-    return url;
+    return finalUrl.href;
   } catch {
     return url;
   } finally {
@@ -48,7 +52,7 @@ export async function resolveSources(
   parsed,
   {
     fetchFn = globalThis.fetch,
-    timeoutMs = 3000,
+    timeoutMs = 5000,
     enabled = true
   } = {}
 ) {

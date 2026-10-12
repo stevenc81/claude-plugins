@@ -2,24 +2,21 @@
 
 Use the Antigravity CLI (`agy`) from inside Claude Code to fact-check with live web grounding. This plugin is for Claude Code users who want a second-opinion reviewer that goes to the live web (not just training data) to verify claims made in a conversation.
 
-> **Heads up:** This plugin previously spawned `gemini --acp` and spoke ACP (JSON-RPC) over stdio. Google retired Gemini CLI for free/Pro/Ultra users on June 18, 2026 and replaced it with [Antigravity CLI](https://antigravity.google) (`agy`), built in Go. This plugin has been migrated to spawn `agy --print` and parse its stdout. The slash commands carry over. See [Migration notes](#migration-notes-gemini-cli--antigravity-cli) below.
+> **Heads up:** This plugin previously spawned `gemini --acp` and spoke ACP (JSON-RPC) over stdio. Google retired Gemini CLI for free/Pro/Ultra users on June 18, 2026 and replaced it with [Antigravity CLI](https://antigravity.google) (`agy`), built in Go. This plugin now runs `agy --print` and reads its JSON output. The slash commands carry over. See [Migration notes](#migration-notes-gemini-cli--antigravity-cli) below.
 
 ## What you get
 
-- `/gemini:review` produces a grounded fact-check of content from the current conversation. `agy` runs live web searches autonomously and returns structured findings: which claims are supported, uncertain, or contradicted, with source URLs.
-- `/gemini:setup` verifies that `agy` is installed and signed in via a trivial round-trip prompt.
-
-Scope is deliberately narrow. One command, one job: grounded fact-checking.
+- `/gemini:review` fact-checks content from the current conversation. `agy` runs live web searches and returns structured findings: which claims are supported, uncertain, or contradicted, with source URLs.
+- `/gemini:ask` sends any prompt to a model through `agy` and returns the answer as is. You can attach files.
+- `/gemini:setup` checks that `agy` is installed and signed in, that the review models exist, and how much Gemini quota you have left.
 
 ## Requirements
 
-- **Antigravity CLI** installed (`agy --version` must work). See https://antigravity.google
-- **Sign-in.** Run `agy -p hello` once interactively; the first call opens a browser for OAuth and writes the session under `~/.gemini/antigravity-cli/`
+- **Antigravity CLI** 1.3.x or later (`agy --version` must work). The plugin relies on `--output-format=json`, `--json-schema` and `--disable-slash-commands`. See https://antigravity.google
+- **Sign-in.** Run `agy -p hello` once interactively. The first call opens a browser for OAuth and writes the session under `~/.gemini/antigravity-cli/`
 - **Node.js 18.18 or later**
 
 ## Install
-
-### From the marketplace (once published)
 
 ```bash
 /plugin marketplace add stevenc81/gemini-plugin-cc
@@ -27,20 +24,22 @@ Scope is deliberately narrow. One command, one job: grounded fact-checking.
 /reload-plugins
 ```
 
-### For local development
+Then run `/gemini:setup` to check that everything works.
+
+The plugin has no fixed version number. Claude Code uses the git commit as the version, so every push to `main` is a new version. To get the latest one:
 
 ```bash
-/plugin install gemini --path /path/to/gemini-plugin-cc/plugins/gemini
-/reload-plugins
+claude plugin marketplace update stevenc81-gemini
+claude plugin update gemini@stevenc81-gemini
 ```
 
-Then run `/gemini:setup` to verify everything is working. It performs an end-to-end check: binary, transport, and auth via a trivial round-trip prompt.
+Then run `/reload-plugins`, or start a new session.
 
 ## Usage
 
 ### `/gemini:review`
 
-Fact-checks content from the current conversation with live web grounding. By default it reviews Claude's immediately previous response, but you can point it at any specific text from the conversation (an earlier reply, a paragraph you pasted, a specific bullet you call out). The agent searches the live web for every verifiable claim, classifies each as `supported` / `uncertain` / `contradicted`, and cites the source URLs it consulted.
+Fact-checks content from the current conversation with live web grounding. By default it reviews Claude's previous reply. You can point it at any other text in the conversation instead: an earlier reply, a paragraph you pasted, or one bullet. The agent searches the web for every claim it can check, marks each one `supported`, `uncertain` or `contradicted`, and cites its sources.
 
 ```bash
 /gemini:review
@@ -49,40 +48,63 @@ Fact-checks content from the current conversation with live web grounding. By de
 /gemini:review focus on the version numbers
 ```
 
-Anything after `/gemini:review` is plain natural language, not fixed syntax or reserved keywords. Claude reads it and uses it in one of two ways:
+Anything after `/gemini:review` is plain natural language, not fixed syntax. Claude uses it in one of two ways:
 
-- To choose what gets reviewed. Phrases like `check the second paragraph above` or `review what I just pasted` point Claude at specific text from the conversation, instead of the default (its previous reply).
-- To steer attention. Phrases like `focus on the version numbers` leave the content as-is and tell the agent to weight those claims most heavily. It still reports any other material issue it finds.
+- To choose what gets reviewed. Phrases like `check the second paragraph above` or `review what I just pasted` point Claude at specific text instead of its previous reply.
+- To steer attention. Phrases like `focus on the version numbers` tell the agent which claims matter most. It still reports any other real issue it finds.
 
-The example wording is illustrative. There are no topic modes or special terms, so write whatever describes the text you mean and the angle you care about.
+When another skill or agent calls `/gemini:review` and gives it text, it reviews exactly that text.
 
 Flags:
-- `--wait` runs the review in the foreground and streams back when done.
-- `--background` runs it as a background task; Claude Code notifies you when it finishes.
+- `--wait` runs the review in the foreground.
+- `--background` runs it as a background task. Claude Code tells you when it finishes.
+- With neither flag, content over 5,000 characters runs in the background and shorter content runs in the foreground.
 
 How it works:
-- Claude selects the content to review from your message and the conversation context (defaulting to its previous turn when you don't specify), then pipes it to the companion via a quoted heredoc. No temp files, no copy-paste.
-- The companion spawns `agy --print --print-timeout <N>s` with the content prepended by a grounded review prompt. `agy` autonomously runs web search and page fetch.
-- Output is schema-validated JSON, rendered into a structured report. A `[grounding]` footer counts the source URLs cited per claim; tool-call observability is not available with `agy --print`, so we rely on claim sources as the grounding signal.
-- Input is capped at 40KB; overly-long content is truncated on a line boundary and the truncation is surfaced in the output.
+- Claude pipes the selected text to the companion script through a quoted heredoc. No temp files, no copy and paste.
+- The companion runs `agy` in an empty temp folder with the review prompt, the JSON schema (`--json-schema`), and JSON output.
+- The prompt tells the model to use only web search. Headless `agy` refuses page fetches, file reads and commands, and a refused tool ends the run with no answer.
+- Search often returns `vertexaisearch.cloud.google.com/grounding-api-redirect/...` links. The plugin resolves each one to the real page URL (one request each, in parallel, 5 seconds max). If that fails, it keeps the original link.
+- The report ends with a `[grounding]` footer. It counts the cited sources and lists any tools `agy` refused.
+- Input is capped at 40KB. Longer content is cut on a line boundary, and the report says so.
+
+Model: reviews run on `gemini-3.1-pro-high`. If that run fails for any reason other than sign-in, the plugin retries once on `gemini-3.8-flash-high`. The timeout covers both runs: the retry gets only the time left, and is skipped when less than 60 seconds remain. The header and the `--json` output (`model`, `requestedModel`, `fellBack`) show which model answered.
 
 Limitations:
-- Search quality is bounded by what the agent returns and what it chooses to fetch. Niche or paywalled sources may be missed. Treat `uncertain` results as "search didn't find it," not "it's wrong."
-- Claude picks the content to review from context. For unambiguous selection, quote or paste the exact text you want audited.
-- `agy --print` does not surface tool-call events the way `gemini --acp` did. The `[grounding]` footer counts cited source URLs rather than search/fetch invocations.
-- **Model.** Reviews run on Gemini 3.1 Pro (High). If that run fails for any reason other than an auth error, the plugin retries once on Gemini 3.5 Flash (High). The model that produced the result is shown in the review header and in `--json` output (`model`, `requestedModel`, `fellBack`). The choice is fixed in the plugin; there is no user-facing `--model` flag.
+- Search quality depends on what the agent finds. Niche or paywalled sources may be missed. Read `uncertain` as "search did not find it," not "it is wrong."
+- Claude picks the text to review from context. To be sure, quote or paste the exact text.
+- `agy` does not report which tools ran, so cited sources are the only sign of grounding.
 
-Output contract (success, degraded, empty):
+Output states:
 
-The agent does not always emit a JSON block that matches the schema. Thinking-heavy outputs sometimes stream reasoning prose and end the turn without the structured payload. The companion always preserves what `agy` actually sent, and callers can discriminate three states:
-
-| State | `--json` fields | Text-mode label |
-|-------|----------------|-----------------|
+| State | `--json` fields | Text label |
+|-------|----------------|------------|
 | Success | `parsed` is an object, `parseError` is `null` | `review (N bytes)` |
-| Degraded | `parsed` is `null`, `parseError` is a string, `rawOutput` contains the reasoning | `review (N bytes, degraded)` with the raw text under a `Raw output:` heading |
-| Empty | `parsed` is `null`, `parseError` is `"Empty output from model."`, `rawOutput` is empty | `review (N bytes, degraded)` with a "no usable output" line and no raw section |
+| Degraded | `parsed` is `null`, `parseError` says why, `rawOutput` holds any text the model sent | `review (N bytes, degraded)` |
+| Timed out | `timedOut` is `true`, `stopReason` is `"timeout"` | `review (N bytes, degraded)` plus a line saying the review was cut off |
 
-The exit code is `0` on any of the three states: the CLI ran and produced output. A non-zero exit code means the plugin itself failed (spawn error, auth failure, timeout). Callers that need to branch on answer quality should read `parseError` and `rawOutput` from `--json` mode rather than relying on the exit code.
+`deniedActions` lists any tools `agy` refused. When a refusal left the model with no answer, `parseError` names the refused tools.
+
+The exit code is `0` in all three states, because the CLI ran. A nonzero exit means the plugin itself failed (spawn error, sign-in, unknown model, or a hard timeout). To branch on answer quality, read `parseError` and `timedOut` from `--json` output.
+
+### `/gemini:ask`
+
+Sends a prompt to a model and returns its answer exactly as the model wrote it.
+
+```bash
+/gemini:ask what changed in the latest Node.js release?
+/gemini:ask --model gemini-3.1-pro-high explain this error in plain words
+/gemini:ask --file ./notes.md --file ./plan.md which plan is riskier?
+/gemini:ask --json summarize this thread
+```
+
+- `--model <id>` takes any ID from `agy models`. The default is `gemini-3.8-flash-medium`. An unknown ID fails with a message telling you to run `agy models`.
+- The prompt can be up to 100,000 bytes. Pass larger input with `--file`.
+- `--file <path>` can repeat. The plugin checks that each file exists and copies it into the empty temp folder that `agy` runs in. Gemini can read those copies and nothing else from the file's folder. The prompt lists the paths of the copies.
+- `--json` returns `{model, response, tokens, deniedActions, timedOut}`.
+- It runs in the foreground by default. `--background` runs it as a background task.
+- `agy` runs in a fresh temp folder that is deleted afterwards. `agy`'s own saved conversations are left alone.
+- If `agy` refused a tool or the run timed out, a short note follows the answer.
 
 ### `/gemini:setup`
 
@@ -91,7 +113,11 @@ The exit code is `0` on any of the three states: the CLI ran and produced output
 /gemini:setup --json
 ```
 
-Verifies the `agy` binary, the print transport, and auth. If anything fails, suggests a next step.
+Setup spends one model call. It sends a canary prompt ("Reply with the single word OK") and checks that the reply echoes it. That proves sign-in works and the prompt really reached the model. A CLI change that makes `agy` exit 0 without seeing the prompt shows up as `Prompt check: FAILED`.
+
+Two free checks run alongside it:
+- **Model check** reads `agy models` and looks for the two review models and the `/gemini:ask` default. `ok` means all three are listed. `degraded` means one is missing: reviews still run on the other review model, or only `/gemini:ask` without `--model` is affected. `FAILED` (exit 1) means both review models are missing. `unknown` means `agy models` could not run.
+- **Gemini quota** reads `agy -p /usage` and shows the weekly and 5-hour remaining percent with reset times. If that call fails, setup still runs and shows the quota as unknown. `--json` includes it as `quota`.
 
 ## Configuration
 
@@ -99,20 +125,19 @@ Environment variables:
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS` | 600000 | Wall-clock timeout for the `agy --print` call, translated to `--print-timeout <N>s`. Grounded reviews commonly run 2–6 minutes; the cap exists to detect a genuinely stuck run, not to bound expected runtime. |
-| `GEMINI_PLUGIN_CC_DEBUG` | (unset) | When set to `1`, error renders include the underlying cause. |
+| `GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS` | 1200000 (20 minutes) | Passed to `agy` as `--print-timeout`. When it runs out, `agy` returns what it has so far, and the plugin marks the result as timed out. The plugin's own hard limit is 30 seconds longer, so that partial answer can arrive first. The companion flag `--timeout-ms <n>` overrides it. Foreground runs of `/gemini:review` and `/gemini:ask` pass `--timeout-ms 540000` (9 minutes), to finish before Claude Code's 10-minute limit on a foreground command. |
+| `GEMINI_PLUGIN_CC_RESOLVE_SOURCES` | (unset) | Set to `0` to keep grounding redirect links as they are. |
+| `GEMINI_PLUGIN_CC_RESOLVE_SOURCES_TIMEOUT_MS` | 5000 | Time limit for resolving each redirect link. |
+| `GEMINI_PLUGIN_CC_DEBUG` | (unset) | Set to `1` to include the underlying cause in error output. |
 
 ## How it works
 
-The plugin wraps **Antigravity CLI** (`agy`). For each review, it:
+For each call, the plugin:
 
-1. Spawns `agy --print --print-timeout <N>s` as a child process
-2. Writes the prompt (containing the grounded-review template, the content to review, and the JSON output schema) to `agy`'s stdin
-3. Reads `agy`'s stdout once the process exits
-4. Validates the output against a JSON schema
-5. Renders the findings with source URLs and a grounding-coverage footer
-
-The agent autonomously decides when to run web searches; the plugin doesn't drive tool selection or stream tool events. This is a deliberate simplification from the previous ACP-based design.
+1. Runs `agy` with every flag in `--flag=value` form: `--model`, `--output-format=json`, `--disable-slash-commands`, then `--print=<prompt>` and `--print-timeout`. Reviews add `--json-schema`. The prompt is the value of `--print`, because `agy` ignores stdin in print mode
+2. Reads the JSON result: the answer (`structured_output` when a schema was used, otherwise `response`), token usage, and refused tools
+3. Checks `agy`'s stderr for its timeout notice, and on a nonzero exit for `AGY_ERROR`, unknown model, and sign-in errors, in that order
+4. For reviews, validates the result against the schema, resolves redirect links, and renders the report
 
 ## FAQ
 
@@ -126,29 +151,29 @@ Yes. This plugin is Antigravity-specific and runs independently of other plugins
 
 ### Which model runs the review?
 
-Gemini 3.1 Pro (High) by default. If that run fails for any reason other than an auth error, the plugin retries once on Gemini 3.5 Flash (High), and the report notes the fallback. The model that produced the result is shown in the review header and in the `--json` payload (`model`, `requestedModel`, `fellBack`).
+`gemini-3.1-pro-high`. If that run fails for any reason other than sign-in, the plugin retries once on `gemini-3.8-flash-high`, and the report says so. Reviews have no `--model` flag; `/gemini:ask` does.
 
-The choice is fixed in the plugin and passed as `agy --model <name>`; there is no user-facing `--model` flag. `agy` 1.0.5 lists other models via `agy models` (Gemini 3.x, Claude Opus and Sonnet 4.6, GPT-OSS), but the plugin pins the two above.
+As of `agy` 1.3.3, `agy models` lists `gemini-3.8-flash-{high,medium,low}`, `gemini-3.7-flash-{high,medium,low}`, `gemini-3.6-flash-{high,medium,low}`, `gemini-3.1-pro-{high,low}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}` and `gpt-oss-120b-medium`. `/gemini:setup` checks both review models and the `/gemini:ask` default, so a rename shows up there first.
 
 ### Why is a grounded review slow?
 
-Each verifiable claim runs at least one web search, usually followed by a page fetch. Server-side reasoning compounds with that. A 4–5 claim grounded review typically takes 2–6 minutes end-to-end. Because `agy --print` does not stream progress, the wait is silent until the response lands.
+Each claim needs at least one web search, and the model reasons over the results. A review of four or five claims can take several minutes. `agy` does not stream progress, so the wait is silent until the answer arrives.
 
 ### Does the search cost money?
 
-Your `agy` sign-in governs billing. Google AI Pro/Ultra and free-tier accounts have their own quotas; enterprise accounts use their own license. See your Antigravity plan for details.
+Your `agy` sign-in governs billing and quota. `/gemini:setup` shows how much Gemini quota you have left. See your Antigravity plan for details.
 
 ## Migration notes (Gemini CLI → Antigravity CLI)
 
 On May 19, 2026 at Google I/O, Google announced that Gemini CLI was being retired for free/Pro/Ultra users on June 18, 2026 and replaced with Antigravity CLI (`agy`). This plugin migrated in response. What changed and what stayed:
 
-- **Transport.** Now spawns `agy --print` and reads stdout. The previous ACP JSON-RPC handshake (`initialize`, `session/new`, `session/set_mode`, `session/set_model`, `session/prompt`, `session/cancel`, `session/update`) is gone; `agy` does not expose ACP.
-- **Plan mode.** Removed. `agy --print` operates on stdin only with no exposed cwd, so the read-only-ness comes from the transport itself rather than a session mode flag.
-- **Tool-call observability.** Lost. `agy --print` does not surface tool-call events. The `[grounding]` footer now counts cited source URLs rather than search/fetch invocations.
-- **Model selection.** The user-facing `--model` flag and model aliases were dropped in 0.1.0. The plugin now pins the review model internally: Gemini 3.1 Pro (High), with a Gemini 3.5 Flash (High) fallback, passed via `agy --model`. The `model`, `requestedModel`, and `fellBack` fields appear in `--json` output; there is still no user-facing `--model` flag.
-- **Streaming progress.** Lost. `agy --print` returns the full response in one shot. Set a generous `--print-timeout` for longer prompts.
+- **Transport.** Now spawns `agy` in print mode and reads its JSON output. The previous ACP JSON-RPC handshake (`initialize`, `session/new`, `session/set_mode`, `session/set_model`, `session/prompt`, `session/cancel`, `session/update`) is gone; `agy` does not expose ACP. Since agy 1.1.x, `--print` takes the prompt as its value. Bare `--print` with the prompt on stdin exits 2 with `flag needs an argument`, because stdin is ignored in print mode. So the plugin passes `--print=<prompt>`. It needs agy 1.3.x or later.
+- **Plan mode.** Removed. Headless `agy` cannot ask for permission, so it refuses file writes, commands and page fetches. Reviews stay read-only without a session mode.
+- **Tool-call observability.** Lost. `agy` does not report which tools ran. The `[grounding]` footer counts cited sources and lists any tools `agy` refused.
+- **Model selection.** Reviews pin the model: `gemini-3.1-pro-high`, with a `gemini-3.8-flash-high` fallback, passed as `--model=<id>`. Model IDs are the ones `agy models` prints. `/gemini:ask` takes any of them with `--model`.
+- **Streaming progress.** Lost. `agy --print` returns the full response in one shot. The default timeout is 20 minutes.
 - **Auth.** Now uses Google OAuth via `agy`. `GEMINI_API_KEY` and `gemini auth login` are no longer used.
-- **Slash commands.** Unchanged. `/gemini:review` and `/gemini:setup` still work.
+- **Slash commands.** `/gemini:review` and `/gemini:setup` still work. `/gemini:ask` is new.
 
 Enterprise users with a Gemini Code Assist Standard or Enterprise license retain access to the original `gemini` binary. This plugin no longer targets that path; if you need it, pin to a pre-migration tag.
 
@@ -168,26 +193,17 @@ node tests/smoke-review.mjs
 
 This feeds a small synthetic response with deliberately false claims and asserts that (a) the agent returned at least one contradicted/uncertain verdict and (b) at least one claim cites a source URL.
 
-### Deploying changes locally (no version bump)
+### Trying changes before you push
 
-When this repo is added as a `directory` marketplace, the plugin Claude Code runs is a version-keyed copy under `~/.claude/plugins/cache/<marketplace>/gemini/<version>/`, not this working tree. To make local edits live without bumping the version:
-
-```bash
-npm run deploy:local
-```
-
-This copies `plugins/gemini/` into the installed cache path in place, leaving the version unchanged. `scripts/` changes take effect on the next `/gemini:review` or `/gemini:setup` (node re-reads them on each run). Run `/reload-plugins` after changing command frontmatter or prompt templates.
-
-For ongoing development you can instead install straight from the path, which reads the working tree live with no copy step:
+Start Claude Code with the plugin loaded from your working tree. This applies to that session only:
 
 ```bash
-/plugin install gemini --path /path/to/gemini-plugin-cc/plugins/gemini
-/reload-plugins
+claude --plugin-dir ./plugins/gemini
 ```
 
-### Known footguns
+### Known problems
 
-- Always quote `$ARGUMENTS` in command markdown (`"$ARGUMENTS"`). Unquoted expansion breaks arguments that contain spaces.
+- Do not paste `$ARGUMENTS` into a shell string in command markdown. Quotes, `$` or a backtick in the user's text then break the command. `review.md` and `ask.md` tell Claude to pass each flag as its own argument and the free text as one single-quoted argument.
 
 ## License
 

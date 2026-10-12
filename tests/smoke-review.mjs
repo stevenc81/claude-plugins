@@ -7,9 +7,9 @@
  * Pipes a short synthetic "assistant response" to the review subcommand and
  * verifies the agent returns a structured response with at least one
  * non-supported verdict (we seed a known-false claim so the reviewer should
- * flag it) AND at least one claim cites a source URL. Tool-call observability
- * is not available with `agy --print`, so we rely on claim sources rather than
- * tool-call counts as the grounding signal.
+ * flag it) AND at least one claim cites a source URL. agy does not report tool
+ * calls, so claim sources are the grounding signal. Refused tools and timeouts
+ * are printed when present.
  *
  * Usage: node tests/smoke-review.mjs
  */
@@ -36,7 +36,13 @@ async function main() {
   const result = spawnSync(
     process.execPath,
     [COMPANION, "review", "--json"],
-    { encoding: "utf8", timeout: 600_000, input: SYNTHETIC_RESPONSE }
+    {
+      encoding: "utf8",
+      // 5 minutes per model call; the hard limit covers primary + fallback.
+      env: { ...process.env, GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS: "300000" },
+      timeout: 720_000,
+      input: SYNTHETIC_RESPONSE
+    }
   );
   const elapsed = ((Date.now() - started) / 1000).toFixed(1);
 
@@ -49,6 +55,9 @@ async function main() {
   console.log(`completed in ${elapsed}s`);
   console.log(`  stopReason: ${payload.stopReason}`);
   console.log(`  input bytes: ${payload.target.inputBytes}`);
+  console.log(`  model: ${payload.model}${payload.fellBack ? " (fell back)" : ""}`);
+  console.log(`  timedOut: ${payload.timedOut}`);
+  console.log(`  refused tools: ${JSON.stringify(payload.deniedActions ?? [])}`);
 
   if (payload.parseError) {
     console.error(`  PARSE ERROR: ${payload.parseError}`);

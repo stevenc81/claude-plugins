@@ -108,3 +108,22 @@ test("normalizeArgv: empty or whitespace returns empty", () => {
   assert.deepEqual(normalizeArgv([""]), []);
   assert.deepEqual(normalizeArgv(["   "]), []);
 });
+
+test("valueFlags adds command-specific value flags", () => {
+  const { options } = parseArgs(["--model", "gemini-3.8-flash-low", "--json"], { valueFlags: ["--model"] });
+  assert.equal(options.model, "gemini-3.8-flash-low");
+  assert.equal(options.json, true);
+});
+
+test("listFlags collect repeated values into an array", () => {
+  const { options, positionals } = parseArgs(
+    ["--file", "a.txt", "--file=b/c.md", "what", "is", "this"],
+    { allowPositionals: true, listFlags: ["--file"] }
+  );
+  assert.deepEqual(options.file, ["a.txt", "b/c.md"]);
+  assert.deepEqual(positionals, ["what", "is", "this"]);
+});
+
+test("command-specific flags stay unknown for other commands", () => {
+  assert.throws(() => parseArgs(["--file", "a.txt"]), (err) => /unknown flag.*--file/i.test(err.message));
+});

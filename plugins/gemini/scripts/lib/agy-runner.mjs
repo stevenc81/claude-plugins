@@ -1,9 +1,15 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import process from "node:process";
-import { AgyAuthError, AgyConnectionError, AgyTimeoutError } from "./errors.mjs";
+import { AgyAuthError, AgyConnectionError, AgyModelError, AgyTimeoutError } from "./errors.mjs";
 
-const DEFAULT_PROMPT_TIMEOUT_MS = 600_000;
+export const DEFAULT_PROMPT_TIMEOUT_MS = 1_200_000;
+// agy's own --print-timeout returns partial output with exit 0. Our wall-clock
+// timer runs a bit longer so that partial result can arrive before we kill.
+const WALL_CLOCK_GRACE_MS = 30_000;
 const SIGKILL_GRACE_MS = 1500;
+
+const PRINT_TIMEOUT_MARKER = /\[agy\] print timeout after/;
+const UNKNOWN_MODEL_MARKER = /is not recognized as a known model/;
 
 function secondsForGoDuration(ms) {
   return `${Math.max(1, Math.ceil(ms / 1000))}s`;
@@ -20,13 +26,68 @@ function isAuthMessage(text) {
   );
 }
 
+/** agy 1.2+ prints `AGY_ERROR: {...}` on stderr (exit 3) for model and agent errors. */
+function findAgyErrorLine(stderr) {
+  return String(stderr ?? "").match(/^AGY_ERROR:\s*(\{.*\})\s*$/m)?.[1] ?? null;
+}
+
+function parseJsonResult(stdout) {
+  try {
+    const parsed = JSON.parse(stdout.trim());
+    if (parsed && typeof parsed === "object") return parsed;
+  } catch {
+    /* not JSON; fall through */
+  }
+  return { response: stdout };
+}
+
+function errorForExit({ code, signal, stdout, stderr, model }) {
+  const agyError = findAgyErrorLine(stderr);
+  if (agyError) {
+    if (/UNAUTHENTICATED/.test(agyError)) {
+      return new AgyAuthError(`agy is not signed in: ${agyError}`, {
+        suggestion: "Run `agy -p hello` once interactively to complete OAuth, then retry."
+      });
+    }
+    return new AgyConnectionError(`agy reported an error (exit ${code ?? signal}): ${agyError}`, {
+      suggestion: "Rerun with GEMINI_PLUGIN_CC_DEBUG=1 for details."
+    });
+  }
+
+  const detail =
+    stderr.trim() || parseJsonResult(stdout).error || stdout.trim() || `exit ${code ?? signal}`;
+  // The unknown-model text lists display names such as "Gemini 3.1 Pro", so it
+  // must be matched before the auth word list below.
+  if (UNKNOWN_MODEL_MARKER.test(detail)) {
+    return new AgyModelError(`agy does not know the model "${model ?? "(default)"}".`, {
+      suggestion: "Run `agy models` to see the model IDs you can use."
+    });
+  }
+  if (isAuthMessage(detail)) {
+    return new AgyAuthError(`agy is not signed in: ${detail}`, {
+      suggestion: "Run `agy -p hello` once interactively to complete OAuth, then retry."
+    });
+  }
+  return new AgyConnectionError(`agy --print failed (${code ?? signal}): ${detail}`, {
+    suggestion:
+      "Verify `agy --version` works and you are signed in. Rerun with GEMINI_PLUGIN_CC_DEBUG=1 for details."
+  });
+}
+
 /**
- * Run a single prompt against the Antigravity CLI (`agy --print`) and return
- * the captured stdout. When `model` is set it is passed through as
- * `agy --model <model>` and echoed back on the result; otherwise `agy` uses its
- * default model and the returned `model` is `null`. `tokens` is always `null`
- * and `toolCalls` is empty because `agy --print` surfaces neither usage nor
- * tool-call events.
+ * Run a single prompt through the Antigravity CLI in print mode and return the
+ * parsed JSON result. The prompt travels as `--print=<prompt>` (agy ignores
+ * stdin in print mode). All flags use the `--flag=value` form so Go's flag
+ * parser can never consume a neighbouring flag as a value.
+ *
+ * `--output-format=json` gives us usage and refused tools. When `jsonSchema`
+ * is set, `text` is the serialized `structured_output`; agy's `response` can
+ * carry stray keys in that mode, so it is only returned as `response` for
+ * display. `--disable-slash-commands` keeps a prompt that starts with `/` from
+ * being run as a local agy command.
+ *
+ * A run that hits agy's `--print-timeout` still exits 0 with partial output;
+ * the stderr marker is the only reliable signal, surfaced as `timedOut`.
  */
 export function runReview({
   prompt,
@@ -34,17 +95,20 @@ export function runReview({
   promptTimeoutMs = DEFAULT_PROMPT_TIMEOUT_MS,
   agentVersion = null,
   model = null,
-  spawnFn = nodeSpawn,
-  onProgress: _onProgress = null
+  jsonSchema = null,
+  spawnFn = nodeSpawn
 } = {}) {
   if (!prompt) {
     throw new AgyConnectionError("runReview requires a non-empty prompt.");
   }
 
   const args = [];
-  if (model) args.push("--model", model);
-  args.push("--print", "--print-timeout", secondsForGoDuration(promptTimeoutMs));
-  const proc = spawnFn("agy", args, { cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  if (model) args.push(`--model=${model}`);
+  args.push("--output-format=json", "--disable-slash-commands");
+  if (jsonSchema) args.push(`--json-schema=${jsonSchema}`);
+  args.push(`--print=${prompt}`, `--print-timeout=${secondsForGoDuration(promptTimeoutMs)}`);
+  const proc = spawnFn("agy", args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const wallClockMs = promptTimeoutMs + WALL_CLOCK_GRACE_MS;
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -85,7 +149,7 @@ export function runReview({
         killTimer.unref?.();
         reject(
           new AgyTimeoutError(
-            `agy --print exceeded wall-clock budget of ${promptTimeoutMs}ms.`,
+            `agy --print did not finish within ${wallClockMs}ms.`,
             {
               suggestion:
                 "Retry. For consistently large prompts, raise GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS."
@@ -93,7 +157,7 @@ export function runReview({
           )
         );
       });
-    }, promptTimeoutMs);
+    }, wallClockMs);
     wallTimer.unref?.();
 
     proc.on?.("error", (err) => {
@@ -121,46 +185,32 @@ export function runReview({
 
     proc.on?.("exit", (code, signal) => {
       finishWith(() => {
-        if (code === 0) {
-          resolve({
-            stopReason: "end_turn",
-            text: stdout,
-            model: model ?? null,
-            tokens: null,
-            agentVersion,
-            toolCalls: []
-          });
+        if (code !== 0) {
+          reject(errorForExit({ code, signal, stdout, stderr, model }));
           return;
         }
-        const detail = stderr.trim() || stdout.trim() || `exit ${code ?? signal}`;
-        if (isAuthMessage(detail)) {
-          reject(
-            new AgyAuthError(`agy is not signed in: ${detail}`, {
-              suggestion:
-                "Run `agy --print -p 'hello'` once interactively to complete OAuth, then retry."
-            })
-          );
-          return;
+        const result = parseJsonResult(stdout);
+        const response = typeof result.response === "string" ? result.response : "";
+        let text = response;
+        if (result.structured_output != null) {
+          text = JSON.stringify(result.structured_output);
+        } else if (jsonSchema) {
+          text = "";
         }
-        reject(
-          new AgyConnectionError(`agy --print failed (${code ?? signal}): ${detail}`, {
-            suggestion:
-              "Verify `agy --version` works and you are signed in. Rerun with GEMINI_PLUGIN_CC_DEBUG=1 for details."
-          })
-        );
+        const timedOut = PRINT_TIMEOUT_MARKER.test(stderr);
+        const usage = result.usage ?? null;
+        resolve({
+          stopReason: timedOut ? "timeout" : "end_turn",
+          text,
+          response,
+          model: model ?? null,
+          // A timed-out run reports all-zero usage, which is not real data.
+          tokens: usage && usage.total_tokens > 0 ? usage : null,
+          deniedActions: Array.isArray(result.denied_actions) ? result.denied_actions : [],
+          timedOut,
+          agentVersion
+        });
       });
     });
-
-    try {
-      proc.stdin?.end(prompt);
-    } catch (err) {
-      finishWith(() => {
-        reject(
-          new AgyConnectionError(`failed to write prompt to agy stdin: ${err?.message ?? err}`, {
-            cause: err
-          })
-        );
-      });
-    }
   });
 }

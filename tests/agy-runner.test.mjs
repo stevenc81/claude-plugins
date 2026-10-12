@@ -6,6 +6,7 @@ import { runReview } from "../plugins/gemini/scripts/lib/agy-runner.mjs";
 import {
   AgyAuthError,
   AgyConnectionError,
+  AgyModelError,
   AgyTimeoutError
 } from "../plugins/gemini/scripts/lib/errors.mjs";
 
@@ -33,53 +34,155 @@ function makeFakeProc({ stdoutChunks = [], stderrChunks = [], exitCode = 0, exit
   return { proc, getStdin: () => stdinWrites.join("") };
 }
 
-test("spawns agy --print with the configured cwd and writes prompt to stdin", async () => {
-  let spawnArgs;
-  let captured;
-  const { proc } = makeFakeProc({
-    stdoutChunks: ["hello back\n"],
-    captureStdin: (s) => (captured = s)
+function agyJson(fields = {}) {
+  return JSON.stringify({
+    conversation_id: "c-1",
+    status: "SUCCESS",
+    response: "",
+    duration_seconds: 1,
+    num_turns: 1,
+    usage: { input_tokens: 10, output_tokens: 2, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 12 },
+    ...fields
   });
+}
+
+function captureArgs(proc) {
+  const captured = {};
   const spawnFn = (cmd, args, opts) => {
-    spawnArgs = { cmd, args, opts };
+    Object.assign(captured, { cmd, args, opts });
     return proc;
   };
-  const result = await runReview({
-    prompt: "ping",
-    cwd: "/tmp/xyz",
-    spawnFn,
-    promptTimeoutMs: 60_000
-  });
-  assert.equal(spawnArgs.cmd, "agy");
-  assert.deepEqual(spawnArgs.args, ["--print", "--print-timeout", "60s"]);
-  assert.equal(spawnArgs.opts.cwd, "/tmp/xyz");
-  assert.equal(captured, "ping");
+  return { captured, spawnFn };
+}
+
+const UNKNOWN_MODEL_STDERR = [
+  'error: invalid model selection (--model "gemini-9-fake" --effort ""): model gemini-9-fake is not recognized as a known model or custom model in settings',
+  "Available models:",
+  "  Gemini 3.8 Flash (High)",
+  "  Gemini 3.1 Pro (High)",
+  "  Claude Opus 5.5 (Low)",
+  ""
+].join("\n");
+
+test("passes json output, slash-command guard and the prompt as --flag=value args", async () => {
+  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "hello back\n" })] });
+  const { captured, spawnFn } = captureArgs(proc);
+  const result = await runReview({ prompt: "ping", cwd: "/tmp/xyz", spawnFn, promptTimeoutMs: 60_000 });
+  assert.equal(captured.cmd, "agy");
+  assert.deepEqual(captured.args, [
+    "--output-format=json",
+    "--disable-slash-commands",
+    "--print=ping",
+    "--print-timeout=60s"
+  ]);
+  assert.equal(captured.opts.cwd, "/tmp/xyz");
+  // The prompt travels in argv; agy ignores stdin in print mode.
+  assert.equal(captured.opts.stdio[0], "ignore");
   assert.equal(result.text, "hello back\n");
+  assert.equal(result.response, "hello back\n");
   assert.equal(result.stopReason, "end_turn");
-  assert.deepEqual(result.toolCalls, []);
-  // agy --print exposes no runtime model, so the runner always returns null.
+  assert.equal(result.timedOut, false);
+  assert.deepEqual(result.deniedActions, []);
   assert.equal(result.model, null);
-  assert.equal(result.tokens, null);
+  assert.equal(result.tokens.input_tokens, 10);
+  assert.equal(result.tokens.total_tokens, 12);
+});
+
+test("passes --model and --json-schema before --print", async () => {
+  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "ok" })] });
+  const { captured, spawnFn } = captureArgs(proc);
+  const result = await runReview({
+    prompt: "x",
+    model: "gemini-3.1-pro-high",
+    jsonSchema: "/abs/schema.json",
+    promptTimeoutMs: 60_000,
+    spawnFn
+  });
+  assert.deepEqual(captured.args, [
+    "--model=gemini-3.1-pro-high",
+    "--output-format=json",
+    "--disable-slash-commands",
+    "--json-schema=/abs/schema.json",
+    "--print=x",
+    "--print-timeout=60s"
+  ]);
+  assert.equal(result.model, "gemini-3.1-pro-high");
 });
 
 test("rounds prompt-timeout up to the nearest second for agy's Go duration", async () => {
-  let captured;
-  const { proc } = makeFakeProc({ stdoutChunks: ["k\n"] });
-  await runReview({
-    prompt: "x",
-    promptTimeoutMs: 1500,
-    spawnFn: (_cmd, args) => {
-      captured = args;
-      return proc;
-    }
+  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "k" })] });
+  const { captured, spawnFn } = captureArgs(proc);
+  await runReview({ prompt: "x", promptTimeoutMs: 1500, spawnFn });
+  assert.equal(captured.args.at(-1), "--print-timeout=2s");
+});
+
+test("default prompt timeout is 20 minutes", async () => {
+  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "k" })] });
+  const { captured, spawnFn } = captureArgs(proc);
+  await runReview({ prompt: "x", spawnFn });
+  assert.equal(captured.args.at(-1), "--print-timeout=1200s");
+});
+
+test("with a schema, text is the serialized structured_output, never the response", async () => {
+  const structured = { overall: "mixed", summary: "s", claims: [], reasoning_issues: [] };
+  const { proc } = makeFakeProc({
+    stdoutChunks: [
+      agyJson({
+        response: JSON.stringify({ ...structured, toolAction: "Finishing", toolSummary: "done" }),
+        structured_output: structured
+      })
+    ]
   });
-  // 1500ms -> 2s after ceil
-  assert.deepEqual(captured, ["--print", "--print-timeout", "2s"]);
+  const result = await runReview({ prompt: "x", jsonSchema: "/s.json", spawnFn: () => proc });
+  assert.deepEqual(JSON.parse(result.text), structured);
+  assert.match(result.response, /toolAction/);
+});
+
+test("with a schema but no structured_output, text is empty and response is kept", async () => {
+  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "partial prose" })] });
+  const result = await runReview({ prompt: "x", jsonSchema: "/s.json", spawnFn: () => proc });
+  assert.equal(result.text, "");
+  assert.equal(result.response, "partial prose");
+});
+
+test("returns denied_actions when agy refuses a tool", async () => {
+  const denied = [{ action: "read_url", display_name: "ReadUrlContent" }];
+  const { proc } = makeFakeProc({
+    stdoutChunks: [agyJson({ response: "", denied_actions: denied })],
+    stderrChunks: ['jetski: no output produced, a tool required the "read_url" permission\n']
+  });
+  const result = await runReview({ prompt: "x", spawnFn: () => proc });
+  assert.equal(result.text, "");
+  assert.deepEqual(result.deniedActions, denied);
+});
+
+test("detects agy's print timeout marker and drops all-zero usage", async () => {
+  const { proc } = makeFakeProc({
+    stdoutChunks: [
+      agyJson({
+        response: "partial essay",
+        duration_seconds: 0,
+        usage: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 0 }
+      })
+    ],
+    stderrChunks: ["[agy] print timeout after 3s with turn in progress; returning partial output\n"]
+  });
+  const result = await runReview({ prompt: "x", spawnFn: () => proc });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.stopReason, "timeout");
+  assert.equal(result.text, "partial essay");
+  assert.equal(result.tokens, null);
+});
+
+test("falls back to raw stdout when it is not JSON", async () => {
+  const { proc } = makeFakeProc({ stdoutChunks: ["part-1 ", "part-2"] });
+  const result = await runReview({ prompt: "x", spawnFn: () => proc });
+  assert.equal(result.text, "part-1 part-2");
+  assert.equal(result.tokens, null);
 });
 
 test("nonzero exit throws AgyConnectionError with stderr in the message", async () => {
   const { proc } = makeFakeProc({
-    stdoutChunks: [""],
     stderrChunks: ["transient backend error: 503\n"],
     exitCode: 1
   });
@@ -91,13 +194,64 @@ test("nonzero exit throws AgyConnectionError with stderr in the message", async 
 
 test("nonzero exit with auth-shaped stderr throws AgyAuthError", async () => {
   const { proc } = makeFakeProc({
-    stdoutChunks: [""],
     stderrChunks: ["fatal: not signed in\n"],
     exitCode: 1
   });
   await assert.rejects(
     () => runReview({ prompt: "x", spawnFn: () => proc }),
     (err) => err instanceof AgyAuthError && /not signed in/.test(err.message)
+  );
+});
+
+test("AGY_ERROR line is used before word matching", async () => {
+  // "login" in the message would match the auth word list if checked first.
+  const line = 'AGY_ERROR: {"status":"UNAVAILABLE","code":503,"retryable":true,"error_id":"e-1","message":"login service busy"}';
+  const { proc } = makeFakeProc({ stderrChunks: [`some log\n${line}\n`], exitCode: 3 });
+  await assert.rejects(
+    () => runReview({ prompt: "x", spawnFn: () => proc }),
+    (err) =>
+      err instanceof AgyConnectionError &&
+      !(err instanceof AgyAuthError) &&
+      /exit 3/.test(err.message) &&
+      /UNAVAILABLE/.test(err.message) &&
+      /e-1/.test(err.message)
+  );
+});
+
+test("AGY_ERROR with UNAUTHENTICATED status throws AgyAuthError", async () => {
+  const { proc } = makeFakeProc({
+    stderrChunks: ['AGY_ERROR: {"status":"UNAUTHENTICATED","code":401,"retryable":false}\n'],
+    exitCode: 3
+  });
+  await assert.rejects(
+    () => runReview({ prompt: "x", spawnFn: () => proc }),
+    (err) => err instanceof AgyAuthError
+  );
+});
+
+test("unknown model throws AgyModelError pointing at agy models, never an auth error", async () => {
+  const { proc } = makeFakeProc({
+    stdoutChunks: [agyJson({ status: "ERROR", error: UNKNOWN_MODEL_STDERR })],
+    stderrChunks: [UNKNOWN_MODEL_STDERR],
+    exitCode: 1
+  });
+  await assert.rejects(
+    () => runReview({ prompt: "x", model: "gemini-9-fake", spawnFn: () => proc }),
+    (err) =>
+      err instanceof AgyModelError &&
+      /gemini-9-fake/.test(err.message) &&
+      /agy models/.test(err.suggestion)
+  );
+});
+
+test("unknown model is detected from the JSON error when stderr is empty", async () => {
+  const { proc } = makeFakeProc({
+    stdoutChunks: [agyJson({ status: "ERROR", error: UNKNOWN_MODEL_STDERR })],
+    exitCode: 1
+  });
+  await assert.rejects(
+    () => runReview({ prompt: "x", model: "gemini-9-fake", spawnFn: () => proc }),
+    AgyModelError
   );
 });
 
@@ -118,7 +272,8 @@ test("ENOENT on spawn throws AgyConnectionError suggesting agy install", async (
   );
 });
 
-test("wall-clock timeout kills the process and throws AgyTimeoutError", async () => {
+test("wall-clock timer runs 30s past agy's --print-timeout, then kills", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const proc = new EventEmitter();
   let killed;
   proc.stdin = new Writable({ write: (_c, _e, cb) => cb() });
@@ -126,54 +281,27 @@ test("wall-clock timeout kills the process and throws AgyTimeoutError", async ()
   proc.stderr = Readable.from([]);
   proc.kill = (sig) => {
     killed = sig;
-    setTimeout(() => proc.emit("exit", null, sig), 1);
     return true;
   };
-  await assert.rejects(
-    () => runReview({ prompt: "x", spawnFn: () => proc, promptTimeoutMs: 50 }),
-    (err) => err instanceof AgyTimeoutError
+  let error;
+  const pending = runReview({ prompt: "x", spawnFn: () => proc, promptTimeoutMs: 1000 }).catch(
+    (err) => (error = err)
   );
-  assert.ok(killed === "SIGTERM" || killed === "SIGKILL");
+  t.mock.timers.tick(30_999);
+  await Promise.resolve();
+  assert.equal(killed, undefined);
+  t.mock.timers.tick(1);
+  await pending;
+  assert.ok(error instanceof AgyTimeoutError);
+  assert.equal(killed, "SIGTERM");
 });
 
-test("concatenates multiple stdout chunks into a single text", async () => {
-  const { proc } = makeFakeProc({ stdoutChunks: ["part-1 ", "part-2 ", "part-3"] });
-  const result = await runReview({ prompt: "x", spawnFn: () => proc });
-  assert.equal(result.text, "part-1 part-2 part-3");
-});
-
-test("agentVersion is read from binary detail when provided", async () => {
-  const { proc } = makeFakeProc({ stdoutChunks: ["ok\n"] });
-  const result = await runReview({
-    prompt: "x",
-    agentVersion: "1.0.0",
-    spawnFn: () => proc
-  });
-  assert.equal(result.agentVersion, "1.0.0");
+test("agentVersion is passed through", async () => {
+  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "ok" })] });
+  const result = await runReview({ prompt: "x", agentVersion: "1.3.3", spawnFn: () => proc });
+  assert.equal(result.agentVersion, "1.3.3");
 });
 
 test("missing prompt throws synchronously", () => {
   assert.throws(() => runReview({ prompt: "", spawnFn: () => null }));
-});
-
-test("passes --model before --print when a model is given and echoes it back", async () => {
-  let capturedArgs;
-  const { proc } = makeFakeProc({ stdoutChunks: ["ok\n"] });
-  const result = await runReview({
-    prompt: "x",
-    model: "Gemini 3.1 Pro (High)",
-    promptTimeoutMs: 60_000,
-    spawnFn: (_cmd, args) => {
-      capturedArgs = args;
-      return proc;
-    }
-  });
-  assert.deepEqual(capturedArgs, [
-    "--model",
-    "Gemini 3.1 Pro (High)",
-    "--print",
-    "--print-timeout",
-    "60s"
-  ]);
-  assert.equal(result.model, "Gemini 3.1 Pro (High)");
 });

@@ -6,7 +6,7 @@
  * isolated temp cwd) and verifies that for every one, agy actually returned a
  * usable Gemini review response: exit 0, parsed JSON present (parseError null),
  * with a string `overall` and a non-empty `claims` array. Records the model
- * each run used (Gemini 3.1 Pro (High), or a Gemini 3.5 Flash (High) fallback).
+ * each run used (gemini-3.1-pro-high, or a gemini-3.8-flash-high fallback).
  *
  * Usage: node tests/smoke-review-batch.mjs
  */
@@ -32,7 +32,7 @@ const INPUTS = [
 
 const CONCURRENCY = 4;
 const PER_CALL_TIMEOUT_MS = 120_000; // agy --print-timeout for the primary model
-const KILL_MS = 270_000; // hard kill (allows a primary timeout + fallback to finish)
+const KILL_MS = 330_000; // hard kill (allows a primary timeout + fallback, each with the runner's 30s grace)
 
 function runOne(index, input) {
   return new Promise((resolve) => {
@@ -83,6 +83,8 @@ function runOne(index, input) {
         claims: Array.isArray(parsed?.claims) ? parsed.claims.length : 0,
         sources,
         parseError: payload?.parseError ?? jsonErr,
+        deniedActions: payload?.deniedActions ?? [],
+        timedOut: payload?.timedOut ?? null,
         stderr: ok ? "" : stderr.trim().slice(0, 200)
       });
     });
@@ -99,10 +101,10 @@ async function pool(items, concurrency, fn) {
       const r = await fn(i, items[i]);
       results[i] = r;
       const tag = r.ok ? "PASS" : "FAIL";
-      const fb = r.fellBack ? " (fellBack)" : "";
+      const fb = (r.fellBack ? " (fellBack)" : "") + (r.timedOut ? " (timedOut)" : "");
       const extra = r.ok ? "" : `  <- ${r.parseError || r.stderr || (r.killed ? "killed (timeout)" : "exit " + r.code)}`;
       console.log(
-        `[${String(r.index + 1).padStart(2)}/${items.length}] ${tag}  ${String(r.elapsedS).padStart(5)}s  model=${r.model ?? "?"}${fb}  overall=${r.overall ?? "-"}  claims=${r.claims}  sources=${r.sources}${extra}`
+        `[${String(r.index + 1).padStart(2)}/${items.length}] ${tag}  ${String(r.elapsedS).padStart(5)}s  model=${r.model ?? "?"}${fb}  overall=${r.overall ?? "-"}  claims=${r.claims}  sources=${r.sources}${r.deniedActions.length ? `  refused=${r.deniedActions.map((a) => a.action).join(",")}` : ""}${extra}`
       );
     }
   }

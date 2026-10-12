@@ -39,15 +39,11 @@ function countClaimSources(parsed) {
 
 const VERDICT_ORDER = { contradicted: 0, uncertain: 1, supported: 2 };
 
-function summarizeToolCalls(toolCalls = []) {
-  const counts = { google_web_search: 0, web_fetch: 0, other: 0 };
-  for (const tc of toolCalls) {
-    const name = String(tc?.name ?? tc?.kind ?? "").toLowerCase();
-    if (name.includes("search")) counts.google_web_search += 1;
-    else if (name.includes("fetch")) counts.web_fetch += 1;
-    else counts.other += 1;
-  }
-  return counts;
+/** "ReadUrlContent (read_url), ViewFile (read_file)" from agy's denied_actions. */
+export function describeDeniedActions(deniedActions = []) {
+  return deniedActions
+    .map((a) => (a?.display_name ? `${a.display_name} (${a.action})` : String(a?.action ?? a)))
+    .join(", ");
 }
 
 export function renderReviewResult({
@@ -60,12 +56,13 @@ export function renderReviewResult({
   model = null,
   requestedModel = null,
   fellBack = false,
-  toolCalls = []
+  deniedActions = [],
+  timedOut = false
 }) {
   const labelParts = [];
   if (target?.inputBytes != null) labelParts.push(`${target.inputBytes} bytes`);
   if (target?.truncated) labelParts.push(`truncated by ${target.omittedBytes}`);
-  if (parseError) labelParts.push("degraded");
+  if (parseError || timedOut) labelParts.push("degraded");
   const label = labelParts.length ? `review (${labelParts.join(", ")})` : "review";
   const header = formatHeader({
     reviewLabel: "Gemini Review",
@@ -77,12 +74,16 @@ export function renderReviewResult({
     fellBack
   });
   const lines = [header, "=".repeat(Math.min(header.length, 80)), ""];
+  const refused = describeDeniedActions(deniedActions);
+  if (timedOut) {
+    lines.push("agy hit its time limit and cut the review off. Results may be incomplete.", "");
+  }
 
   if (parseError) {
     const rawText = String(rawOutput ?? "").trim();
     if (rawText) {
       lines.push(
-        "Schema validation failed; Gemini's raw reasoning is preserved below and may still be usable.",
+        "Gemini did not return a valid structured result. Its raw text is below and may still be usable.",
         `(${parseError})`,
         ""
       );
@@ -139,26 +140,18 @@ export function renderReviewResult({
     lines.push(`[note] Input was truncated by ${target.omittedBytes} bytes before review.`);
   }
 
-  const counts = summarizeToolCalls(toolCalls);
-  const totalGrounding = counts.google_web_search + counts.web_fetch;
-  if (totalGrounding > 0) {
-    const parts = [];
-    if (counts.google_web_search > 0) parts.push(`${counts.google_web_search} web search${counts.google_web_search === 1 ? "" : "es"}`);
-    if (counts.web_fetch > 0) parts.push(`${counts.web_fetch} page fetch${counts.web_fetch === 1 ? "" : "es"}`);
-    lines.push(`[grounding] ${parts.join(", ")} used.`);
+  const sourceCount = countClaimSources(parsed);
+  if (sourceCount > 0) {
+    lines.push(
+      `[grounding] ${sourceCount} source URL${sourceCount === 1 ? "" : "s"} cited. ` +
+        "agy does not report tool calls; rely on claim sources for evidence."
+    );
   } else {
-    const sourceCount = countClaimSources(parsed);
-    if (sourceCount > 0) {
-      lines.push(
-        `[grounding] ${sourceCount} source URL${sourceCount === 1 ? "" : "s"} cited. ` +
-          "Tool calls are not surfaced by `agy --print`; rely on claim sources for evidence."
-      );
-    } else {
-      lines.push(
-        "[grounding] No claim sources cited and tool calls are not surfaced by `agy --print`. Treat results as ungrounded."
-      );
-    }
+    lines.push(
+      "[grounding] No claim sources cited and agy does not report tool calls. Treat results as ungrounded."
+    );
   }
+  if (refused) lines.push(`[grounding] agy refused these tools: ${refused}.`);
 
   return lines.join("\n") + "\n";
 }
@@ -169,6 +162,11 @@ export function renderSetupReport({
   transportOk = false,
   authOk = false,
   authDetail = null,
+  promptOk = null,
+  promptDetail = null,
+  modelStatus = null,
+  modelDetail = null,
+  quota = null,
   roundTripMs = null,
   nextSteps = []
 }) {
@@ -176,6 +174,14 @@ export function renderSetupReport({
   lines.push(`agy binary:    ${agy?.available ? "available" : "NOT FOUND"}${agy?.detail ? ` (${agy.detail})` : ""}`);
   lines.push(`Transport:     ${transportOk ? `ok${version ? ` (agy ${version})` : ""}` : "failed"}`);
   lines.push(`Auth check:    ${authOk ? "ok" : "failed"}${authDetail ? `, ${authDetail}` : ""}`);
+  if (promptOk != null) {
+    lines.push(`Prompt check:  ${promptOk ? "ok" : "FAILED"}${promptDetail ? `, ${promptDetail}` : ""}`);
+  }
+  if (modelStatus != null) {
+    const modelLabel = modelStatus === "failed" ? "FAILED" : modelStatus;
+    lines.push(`Model check:   ${modelLabel}${modelDetail ? `, ${modelDetail}` : ""}`);
+  }
+  lines.push(`Gemini quota:  ${formatQuota(quota)}`);
   if (roundTripMs != null) lines.push(`Round trip:    ${roundTripMs}ms`);
   if (nextSteps.length > 0) {
     lines.push("");
@@ -183,6 +189,25 @@ export function renderSetupReport({
     for (const step of nextSteps) lines.push(`  - ${step}`);
   }
   return lines.join("\n") + "\n";
+}
+
+function formatQuota(quota) {
+  if (!quota) return "unknown (could not read `agy -p /usage`)";
+  const part = (label, b) =>
+    b ? `${label} ${b.remainingPercent}% left, resets ${b.resetTime}` : `${label} unknown`;
+  return `${part("weekly", quota.weekly)}; ${part("5-hour", quota.fiveHour)}`;
+}
+
+export function renderAskResult({ response, deniedActions = [], timedOut = false }) {
+  const text = String(response ?? "");
+  const notes = [];
+  if (!text.trim()) notes.push("[note] The model returned no text.");
+  const refused = describeDeniedActions(deniedActions);
+  if (refused) notes.push(`[note] agy refused these tools: ${refused}.`);
+  if (timedOut) notes.push("[note] agy hit its time limit, so this answer was cut off.");
+  if (notes.length === 0) return text;
+  const body = text && !text.endsWith("\n") ? `${text}\n` : text;
+  return `${body}${body ? "\n" : ""}${notes.join("\n")}\n`;
 }
 
 export function renderError(err) {

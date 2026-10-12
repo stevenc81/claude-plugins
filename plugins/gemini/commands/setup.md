@@ -1,13 +1,13 @@
 ---
-description: Check whether Antigravity CLI is installed and signed in
+description: Check that Antigravity CLI works, the review models exist, and show Gemini quota
 argument-hint: '[--json]'
-disable-model-invocation: true
+disable-model-invocation: false
 allowed-tools: Bash(node:*)
 ---
 
 Check whether Antigravity CLI (`agy`) is installed, the print transport works, and auth is valid.
 
-Run:
+Run with a `Bash` timeout of 300000 (5 minutes):
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" setup "$ARGUMENTS"
 ```

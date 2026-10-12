@@ -11,17 +11,14 @@ You are a careful analytical reviewer. You are given a piece of text written by 
 </user_focus>
 
 <grounding>
-You have access to these tools and you MUST use them to ground your review:
-- `google_web_search`: search the live web for authoritative information.
-- `web_fetch`: fetch a specific URL for its full content when a search snippet is insufficient.
+You MUST ground your review with live web search. Use only the `search_web` tool. Do not fetch or open pages, read files, or run commands: those tools are refused in this environment, and calling one ends the review with no output.
 
 Rules for grounding:
-1. For EVERY verifiable claim, run at least one `google_web_search`. Do not rely on training knowledge alone.
-2. When search results point at a specific authoritative source (official docs, release notes, RFC, repo README, well-known reference), use `web_fetch` to read the page and cite the URL.
-3. Put the URLs you actually used to justify your verdict in the `sources` array for that claim. Prefer primary sources (project docs, official spec, vendor release notes) over blog aggregators or SEO pages.
-4. If live search yields no relevant result after a genuine attempt, mark the claim `uncertain` and state that search returned nothing definitive. Do NOT invent confidence.
-5. Treat code references, API usage, command syntax, version numbers, vendor model names, benchmark numbers, and recent-news claims as HIGH-priority targets for grounding.
-6. Do not fabricate URLs. Only include URLs you actually fetched or were returned by search.
+1. For EVERY verifiable claim, run at least one `search_web` query. Do not rely on training knowledge alone.
+2. Put the sources you used to justify your verdict in the `sources` array for that claim. Cite the full page URL of each source as returned by search, never a bare domain such as `https://example.com`. Prefer primary sources (project docs, official spec, vendor release notes) over blog aggregators or SEO pages.
+3. If live search yields no relevant result after a genuine attempt, mark the claim `uncertain` and state that search returned nothing definitive. Do NOT invent confidence.
+4. Treat code references, API usage, command syntax, version numbers, vendor model names, benchmark numbers, and recent-news claims as HIGH-priority targets for grounding.
+5. Do not fabricate URLs. Only include URLs returned by search.
 </grounding>
 
 <review_method>

@@ -3,10 +3,20 @@ import { ConfigError } from "./errors.mjs";
 const VALUE_FLAGS = new Set(["--base", "--cwd"]);
 const BOOLEAN_FLAGS = new Set(["--wait", "--background", "--json"]);
 
-const VALID_FLAGS_FOR_HELP = [...VALUE_FLAGS, ...BOOLEAN_FLAGS].sort();
-
-export function parseArgs(argv, { allowPositionals = false } = {}) {
+/**
+ * `valueFlags` adds command-specific flags that take a value. `listFlags` take
+ * a value and may repeat; their values are collected into an array.
+ */
+export function parseArgs(argv, { allowPositionals = false, valueFlags = [], listFlags = [] } = {}) {
+  const valueFlagSet = new Set([...VALUE_FLAGS, ...valueFlags, ...listFlags]);
+  const listFlagSet = new Set(listFlags);
+  const validFlagsForHelp = [...valueFlagSet, ...BOOLEAN_FLAGS].sort();
   const options = {};
+  const setValue = (name, value) => {
+    const key = name.slice(2);
+    if (listFlagSet.has(name)) (options[key] ??= []).push(value);
+    else options[key] = value;
+  };
   const positionals = [];
   let i = 0;
 
@@ -29,9 +39,9 @@ export function parseArgs(argv, { allowPositionals = false } = {}) {
     const name = eq === -1 ? token : token.slice(0, eq);
     const inlineValue = eq === -1 ? null : token.slice(eq + 1);
 
-    if (VALUE_FLAGS.has(name)) {
+    if (valueFlagSet.has(name)) {
       if (inlineValue != null) {
-        options[name.slice(2)] = inlineValue;
+        setValue(name, inlineValue);
         i += 1;
       } else {
         const value = argv[i + 1];
@@ -40,7 +50,7 @@ export function parseArgs(argv, { allowPositionals = false } = {}) {
             suggestion: `Usage: ${name} <value>`
           });
         }
-        options[name.slice(2)] = value;
+        setValue(name, value);
         i += 2;
       }
       continue;
@@ -58,7 +68,7 @@ export function parseArgs(argv, { allowPositionals = false } = {}) {
     }
 
     throw new ConfigError(`Unknown flag: ${name}`, {
-      suggestion: `Valid flags: ${VALID_FLAGS_FOR_HELP.join(", ")}`
+      suggestion: `Valid flags: ${validFlagsForHelp.join(", ")}`
     });
   }
 

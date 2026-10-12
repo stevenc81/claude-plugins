@@ -1,6 +1,5 @@
 {
   "name": "gemini",
-  "version": "0.1.0",
   "description": "Use Antigravity CLI from Claude Code to fact-check with live web grounding.",
   "author": {
     "name": "stevenc81"

@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadTemplate, loadSchemaText, renderPrompt } from "../plugins/gemini/scripts/lib/prompts.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import { loadTemplate, loadSchemaText, renderPrompt, schemaPath } from "../plugins/gemini/scripts/lib/prompts.mjs";
 import { ConfigError } from "../plugins/gemini/scripts/lib/errors.mjs";
 
 test("loadTemplate reads review.md", () => {
@@ -10,11 +12,21 @@ test("loadTemplate reads review.md", () => {
   assert.match(t, /\{\{USER_FOCUS\}\}/);
 });
 
-test("review template contains grounding directive", () => {
+test("review template limits grounding to search_web and asks for full page URLs", () => {
+  // Headless agy refuses read_url_content, and a refused tool ends the run with
+  // an empty response, so the prompt must keep the model on search only.
   const t = loadTemplate("review");
-  assert.match(t, /google_web_search/);
-  assert.match(t, /web_fetch/);
+  assert.match(t, /Use only the `search_web` tool/);
+  assert.match(t, /Do not fetch or open pages, read files, or run commands/);
+  assert.match(t, /full page URL/);
+  assert.doesNotMatch(t, /web_fetch|google_web_search/);
   assert.match(t, /sources/);
+});
+
+test("schemaPath points at the review schema file", () => {
+  const p = schemaPath("review-output");
+  assert.ok(path.isAbsolute(p));
+  assert.deepEqual(JSON.parse(fs.readFileSync(p, "utf8")), JSON.parse(loadSchemaText("review-output")));
 });
 
 test("loadSchemaText returns raw JSON schema by default", () => {
@@ -102,4 +114,18 @@ test("review template is well-formed: every closing tag has a matching opening t
   }
   assert.deepEqual(unmatched, [], `orphan closing tag(s): ${unmatched.map((n) => `</${n}>`).join(", ")}`);
   assert.deepEqual(open, [], `unclosed opening tag(s): ${open.map((n) => `<${n}>`).join(", ")}`);
+});
+
+test("foreground command flows cap the model run at 9 minutes, under the 10-minute Bash limit", () => {
+  const commandsDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "plugins", "gemini", "commands");
+  for (const name of ["review.md", "ask.md"]) {
+    const text = fs.readFileSync(path.join(commandsDir, name), "utf8");
+    const foreground = text.slice(text.indexOf("Foreground flow:"), text.indexOf("Background flow:"));
+    const background = text.slice(text.indexOf("Background flow:")).match(/command: `([^\n]*)/)[1];
+    // Every command starts with `node` so it matches `allowed-tools: Bash(node:*)`.
+    assert.match(foreground, /\n(node "\$\{CLAUDE_PLUGIN_ROOT\}[^\n]*--timeout-ms 540000[^\n]*)\n/, name);
+    assert.doesNotMatch(text, /PROMPT_TIMEOUT_MS=/, name);
+    assert.match(foreground, /600000/, name);
+    assert.doesNotMatch(background, /timeout-ms/, name);
+  }
 });

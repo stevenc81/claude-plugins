@@ -10,6 +10,7 @@ export class AgyError extends Error {
 export class AgyConnectionError extends AgyError {}
 export class AgyAuthError extends AgyError {}
 export class AgyTimeoutError extends AgyError {}
+export class AgyModelError extends AgyError {}
 
 export class PluginError extends Error {
   constructor(message, { suggestion = null, cause = null } = {}) {
