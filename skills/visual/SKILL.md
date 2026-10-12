@@ -26,7 +26,7 @@ OUT="/tmp/claude-visual"; mkdir -p "$OUT"   # macOS clears /tmp on restart
    - Text: `font-family="Helvetica"`, size 24 or more. The terminal shows the picture about 1000 pixels wide, so smaller text is hard to read.
    - Boxes: a text is about 0.55 x font size x characters wide. Make each box that wide plus 40. Put boxes on a grid with at least 40 between them.
    - Arrows: put a short label on each arrow, a plain verb and what moves, for example `sends wav`.
-   - For a diagram, load the `artifact-diagramming` skill. For a chart, load the `dataviz` skill. Use them for their drawing rules only.
+   - For a diagram, load the `artifact-diagramming` skill if you have it. For a chart, load the `dataviz` skill if you have it. Use them for their drawing rules only.
 2. **Render.** `uv run --offline --no-project --python 3.12 --with resvg-py python "$S/png.py" <file.svg>` writes the PNG beside the SVG in about 0.2 s. On the first run on a machine, leave out `--offline`.
 3. **Check (do not skip).** Read the PNG. Fix text that overlaps, is cut off, or runs out of its box. Render and read it again.
 4. **Show.** Call `mcp__show__media` with the PNG path and a one-line `alt`.
