@@ -32,6 +32,11 @@ const MAX_REVIEW_INPUT_BYTES = 40_000;
 const MAX_ASK_PROMPT_BYTES = 100_000;
 // Below this, a fallback review run would be cut off before it could finish.
 const MIN_FALLBACK_MS = 60_000;
+// Headless agy cannot ask for permission, so one refused tool ends the run with
+// no answer at all. Shell commands and file writes are always refused. Page
+// reads work only if the user allows read_url in their agy settings.
+export const ASK_TOOL_RULE =
+  "Tools: use web search, and open web pages only if you need to. Never run shell commands or write files: this run cannot ask for permission, and a refused tool ends it with no answer.";
 
 // Model policy for /gemini:review: prefer Gemini 3.1 Pro (the deepest grounding
 // tier agy exposes); if that run fails for any reason other than auth, retry
@@ -484,6 +489,14 @@ export async function handleAsk(argv, { stdin = null } = {}) {
       });
     }
   }
+  // The cap is on the user's text. The file list and the tool rule add a few
+  // hundred bytes, which still fits under the 128 KiB argv limit.
+  if (byteLength(prompt) > MAX_ASK_PROMPT_BYTES) {
+    throw new ConfigError(
+      `The prompt is ${byteLength(prompt)} bytes; the limit is ${MAX_ASK_PROMPT_BYTES}.`,
+      { suggestion: "Save large input to a file and pass it with --file <path> instead." }
+    );
+  }
   const model = options.model || DEFAULT_ASK_MODEL;
 
   // Run from an empty temp folder so agy has no repo to wander into. agy can
@@ -498,12 +511,7 @@ export async function handleAsk(argv, { stdin = null } = {}) {
     if (copies.length > 0) {
       prompt += `\n\nFiles for this request (absolute paths):\n${copies.map((f) => `- ${f}`).join("\n")}`;
     }
-    if (byteLength(prompt) > MAX_ASK_PROMPT_BYTES) {
-      throw new ConfigError(
-        `The prompt is ${byteLength(prompt)} bytes; the limit is ${MAX_ASK_PROMPT_BYTES}.`,
-        { suggestion: "Save large input to a file and pass it with --file <path> instead." }
-      );
-    }
+    prompt += `\n\n${ASK_TOOL_RULE}`;
     result = await runReviewImpl({ prompt, cwd, model, promptTimeoutMs });
   } finally {
     removeNeutralCwd(cwd);

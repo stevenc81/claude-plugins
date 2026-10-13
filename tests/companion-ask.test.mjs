@@ -6,7 +6,8 @@ import path from "node:path";
 import {
   handleAsk,
   setRunReviewForTest,
-  DEFAULT_ASK_MODEL
+  DEFAULT_ASK_MODEL,
+  ASK_TOOL_RULE
 } from "../plugins/gemini/scripts/gemini-companion.mjs";
 import { ConfigError, AgyModelError } from "../plugins/gemini/scripts/lib/errors.mjs";
 
@@ -52,7 +53,7 @@ test("ask uses the default model, runs from a fresh temp folder and removes it",
   assert.equal(out, "PONG\n");
   assert.equal(seen.model, DEFAULT_ASK_MODEL);
   assert.equal(DEFAULT_ASK_MODEL, "gemini-3.8-flash-medium");
-  assert.equal(seen.prompt, "Reply with PONG.");
+  assert.equal(seen.prompt, `Reply with PONG.\n\n${ASK_TOOL_RULE}`);
   assert.equal(seen.addDirs, undefined);
   assert.equal(seen.jsonSchema, undefined);
   assert.equal(path.dirname(seen.cwd), path.resolve(os.tmpdir()));
@@ -92,7 +93,7 @@ test("ask joins the prompt from arguments and stdin", async () => {
     return reply();
   });
   await captureStdout(() => handleAsk(["Summarize", "this:"], { stdin: "Some long text.\n" }));
-  assert.equal(prompt, "Summarize this:\n\nSome long text.");
+  assert.equal(prompt, `Summarize this:\n\nSome long text.\n\n${ASK_TOOL_RULE}`);
 });
 
 test("ask rejects an empty prompt without calling agy", async () => {

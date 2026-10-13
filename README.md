@@ -105,6 +105,14 @@ Sends a prompt to a model and returns its answer exactly as the model wrote it.
 - It runs in the foreground by default. `--background` runs it as a background task.
 - `agy` runs in a fresh temp folder that is deleted afterwards. `agy`'s own saved conversations are left alone.
 - If `agy` refused a tool or the run timed out, a short note follows the answer.
+- The plugin tells Gemini to use web search and web pages only, and never to run shell commands or write files. When `agy` runs without a terminal, it cannot ask you for permission. So one refused tool ends the run, and the answer is empty.
+- By default, `agy` also refuses to open web pages. Research jobs, such as reading Reddit threads, need page reads. To allow them, add this to `~/.gemini/antigravity-cli/settings.json`:
+
+  ```json
+  "permissions": { "allow": ["read_url(*)"] }
+  ```
+
+  Gemini can then open any page it finds. It still cannot run commands or read your other files. A research run can take 8 minutes or more, so use `--background` for it.
 
 ### `/gemini:setup`
 
