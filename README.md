@@ -95,17 +95,19 @@ Sends a prompt to a model and returns its answer exactly as the model wrote it.
 /gemini:ask what changed in the latest Node.js release?
 /gemini:ask --model gemini-3.1-pro-high explain this error in plain words
 /gemini:ask --file ./notes.md --file ./plan.md which plan is riskier?
+/gemini:ask --dir ./core/libs/imgqsort --dir ./core/libs/database/haar how do the blur score and duplicate search work?
 /gemini:ask --json summarize this thread
 ```
 
 - `--model <id>` takes any ID from `agy models`. The default is `gemini-3.8-flash-medium`. An unknown ID fails with a message telling you to run `agy models`.
 - The prompt can be up to 100,000 bytes. Pass larger input with `--file`.
 - `--file <path>` can repeat. The plugin checks that each file exists and copies it into the empty temp folder that `agy` runs in. Gemini can read those copies and nothing else from the file's folder. The prompt lists the paths of the copies.
+- `--dir <folder>` gives Gemini read access to a folder, such as a source tree. It can repeat. `agy` runs in the folders' common parent, and the prompt lists the files in the given folders. The plugin refuses folders whose only common parent is `/` or your home folder. `agy` has no tool to list a folder, so the plugin builds that list. It skips names that start with `.` (such as `.git`), `node_modules` and symlinks. If the list is over 20,000 bytes, pass smaller subfolders. Use `--dir` or `--file`, not both.
 - `--json` returns `{model, response, tokens, deniedActions, timedOut}`.
 - It runs in the foreground by default. `--background` runs it as a background task.
 - `agy` runs in a fresh temp folder that is deleted afterwards. `agy`'s own saved conversations are left alone.
 - If `agy` refused a tool or the run timed out, a short note follows the answer.
-- The plugin tells Gemini to use web search and web pages only, and never to run shell commands or write files. When `agy` runs without a terminal, it cannot ask you for permission. So one refused tool ends the run, and the answer is empty.
+- The plugin tells Gemini to use web search, web pages and the local files it was given. It also tells Gemini never to run shell commands, write files or start subagents. When `agy` runs without a terminal, it cannot ask you for permission. So one refused tool ends the run, and the answer is empty.
 - By default, `agy` also refuses to open web pages. Research jobs, such as reading Reddit threads, need page reads. To allow them, add this to `~/.gemini/antigravity-cli/settings.json`:
 
   ```json

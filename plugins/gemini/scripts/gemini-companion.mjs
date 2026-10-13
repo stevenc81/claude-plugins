@@ -30,13 +30,42 @@ import {
 const MAX_REVIEW_INPUT_BYTES = 40_000;
 // The prompt travels in one argv entry; Linux caps a single argument at 128 KiB.
 const MAX_ASK_PROMPT_BYTES = 100_000;
+// The --dir file list also travels in that argv entry, so it gets its own cap.
+const MAX_DIR_LIST_BYTES = 20_000;
 // Below this, a fallback review run would be cut off before it could finish.
 const MIN_FALLBACK_MS = 60_000;
 // Headless agy cannot ask for permission, so one refused tool ends the run with
-// no answer at all. Shell commands and file writes are always refused. Page
-// reads work only if the user allows read_url in their agy settings.
+// no answer at all. Shell commands, file writes and subagents are refused.
+// Page reads work only if the user allows read_url in their agy settings.
+// agy has no tool to list a folder, so local files are named in the prompt.
 export const ASK_TOOL_RULE =
-  "Tools: use web search, and open web pages only if you need to. Never run shell commands or write files: this run cannot ask for permission, and a refused tool ends it with no answer.";
+  "Tools: use web search, and open web pages only if you need to. To read local files, use your file-reading tool with the paths given above. Never run shell commands, write files or start subagents: this run cannot ask for permission, and a refused tool ends it with no answer.";
+
+// The deepest folder that contains every folder in dirs.
+function commonParent(dirs) {
+  let parent = dirs[0];
+  while (!dirs.every((d) => d === parent || d.startsWith(parent + path.sep))) {
+    parent = path.dirname(parent);
+  }
+  return parent;
+}
+
+// Relative paths of the regular files under dir, sorted. Skips names that start
+// with "." (such as .git) and node_modules. Symlinks are skipped, so the list
+// never points outside the folder.
+function listFolderFiles(dir) {
+  const out = [];
+  const walk = (rel) => {
+    for (const entry of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      const child = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(child);
+      else if (entry.isFile()) out.push(child);
+    }
+  };
+  walk("");
+  return out.sort();
+}
 
 // Model policy for /gemini:review: prefer Gemini 3.1 Pro (the deepest grounding
 // tier agy exposes); if that run fails for any reason other than auth, retry
@@ -465,7 +494,7 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   const { options, positionals } = parseArgs(argv, {
     allowPositionals: true,
     valueFlags: ["--model", "--timeout-ms"],
-    listFlags: ["--file"]
+    listFlags: ["--file", "--dir"]
   });
   const promptTimeoutMs = promptTimeoutFrom(options);
 
@@ -489,6 +518,36 @@ export async function handleAsk(argv, { stdin = null } = {}) {
       });
     }
   }
+  const dirs = (options.dir ?? []).map((d) => path.resolve(baseDir, d));
+  if (dirs.length > 0 && files.length > 0) {
+    throw new ConfigError("Use --dir or --file, not both.", {
+      suggestion: "Put the files in a --dir folder, or pass them all with --file."
+    });
+  }
+  for (const d of dirs) {
+    if (!fs.statSync(d, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new ConfigError(`Folder not found: ${d}`, {
+        suggestion: "Check the --dir path and rerun /gemini:ask."
+      });
+    }
+  }
+  // agy runs in the folders' common parent and can read anything inside it,
+  // so refuse a parent that is the whole disk or the home folder.
+  const dir = dirs.length > 0 ? commonParent(dirs) : null;
+  if (dir && (dir === path.parse(dir).root || dir === os.homedir())) {
+    throw new ConfigError(`The --dir folders only share ${dir}, which would let Gemini read everything in it.`, {
+      suggestion: "Pass folders that sit inside one project folder."
+    });
+  }
+  const dirList = dirs
+    .flatMap((d) => listFolderFiles(d).map((f) => path.relative(dir, path.join(d, f)).split(path.sep).join("/")))
+    .map((f) => `- ${f}`)
+    .join("\n");
+  if (byteLength(dirList) > MAX_DIR_LIST_BYTES) {
+    throw new ConfigError(`The --dir file list is over ${MAX_DIR_LIST_BYTES} bytes.`, {
+      suggestion: "Pass smaller subfolders with --dir."
+    });
+  }
   // The cap is on the user's text. The file list and the tool rule add a few
   // hundred bytes, which still fits under the 128 KiB argv limit.
   if (byteLength(prompt) > MAX_ASK_PROMPT_BYTES) {
@@ -499,22 +558,27 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   }
   const model = options.model || DEFAULT_ASK_MODEL;
 
-  // Run from an empty temp folder so agy has no repo to wander into. agy can
-  // read only its workspace, so each --file is copied in here: agy sees those
-  // files and nothing else from their folders. agy keeps its own conversation
-  // history elsewhere; only this folder is removed.
-  const cwd = makeNeutralCwd("gemini-ask-cwd-");
+  // agy can read only its workspace. With --dir, agy runs in that folder and
+  // reads it in place. Otherwise agy runs from an empty temp folder, and each
+  // --file is copied in, so agy sees those files and nothing else from their
+  // folders. agy keeps its own conversation history elsewhere; only the temp
+  // folder is removed.
+  const cwd = dir ?? makeNeutralCwd("gemini-ask-cwd-");
   let result;
   try {
-    const copies = files.map((f, i) => path.join(cwd, `${i + 1}-${path.basename(f)}`));
-    files.forEach((f, i) => fs.copyFileSync(f, copies[i], fs.constants.COPYFILE_FICLONE));
-    if (copies.length > 0) {
-      prompt += `\n\nFiles for this request (absolute paths):\n${copies.map((f) => `- ${f}`).join("\n")}`;
+    if (dir) {
+      prompt += `\n\nFiles in the current folder (relative paths):\n${dirList}`;
+    } else {
+      const copies = files.map((f, i) => path.join(cwd, `${i + 1}-${path.basename(f)}`));
+      files.forEach((f, i) => fs.copyFileSync(f, copies[i], fs.constants.COPYFILE_FICLONE));
+      if (copies.length > 0) {
+        prompt += `\n\nFiles for this request (absolute paths):\n${copies.map((f) => `- ${f}`).join("\n")}`;
+      }
     }
     prompt += `\n\n${ASK_TOOL_RULE}`;
     result = await runReviewImpl({ prompt, cwd, model, promptTimeoutMs });
   } finally {
-    removeNeutralCwd(cwd);
+    if (!dir) removeNeutralCwd(cwd);
   }
 
   const deniedActions = result.deniedActions ?? [];
@@ -538,7 +602,7 @@ function printUsage() {
       "Usage:",
       "  node scripts/gemini-companion.mjs setup [--json]",
       "  node scripts/gemini-companion.mjs review [--json] [--timeout-ms <n>] [focus text...]  (content to review read from stdin)",
-      "  node scripts/gemini-companion.mjs ask [--model <id>] [--file <path>]... [--timeout-ms <n>] [--json] [prompt...]  (prompt from arguments and/or stdin)",
+      "  node scripts/gemini-companion.mjs ask [--model <id>] [--file <path>]... [--dir <folder>]... [--timeout-ms <n>] [--json] [prompt...]  (prompt from arguments and/or stdin)",
       ""
     ].join("\n")
   );
