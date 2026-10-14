@@ -5,8 +5,7 @@ import {
   setRunReviewForTest,
   setBinaryAvailableForTest,
   setRunCommandForTest,
-  PRIMARY_REVIEW_MODEL,
-  FALLBACK_REVIEW_MODEL
+  REVIEW_MODEL
 } from "../plugins/gemini/scripts/gemini-companion.mjs";
 import { AgyAuthError } from "../plugins/gemini/scripts/lib/errors.mjs";
 
@@ -29,8 +28,6 @@ const MODELS_TSV = [
   "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
   "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
   "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
-  "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
-  "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)",
   "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)",
   ""
 ].join("\n");
@@ -154,35 +151,24 @@ test("setup fails the prompt check when agy exits 0 without acting on the prompt
   assert.equal(exitCode, 1);
 });
 
-test("setup model check reports ok when both pinned models are listed by agy models", async () => {
+test("setup model check reports ok when the review model is listed by agy models", async () => {
   setRunReviewForTest(canaryOk);
   const { out, exitCode, line } = await runSetup();
   const modelLine = line("Model check:");
   assert.match(modelLine, /ok/);
-  assert.match(modelLine, new RegExp(PRIMARY_REVIEW_MODEL));
-  assert.match(modelLine, new RegExp(FALLBACK_REVIEW_MODEL));
+  assert.match(modelLine, new RegExp(REVIEW_MODEL));
   assert.match(out, /Ready\. Try/);
   assert.notEqual(exitCode, 1);
 });
 
-test("setup model check is degraded (exit 0) when only the primary model is missing", async () => {
+test("setup model check FAILS and exits 1 when the review model is not listed", async () => {
   setRunReviewForTest(canaryOk);
   setRunCommandForTest(
-    fakeCommands({ models: MODELS_TSV.replace(/^gemini-3\.1-pro-high\t.*\n/m, "") })
+    fakeCommands({ models: MODELS_TSV.replace(/^gemini-3\.8-flash-high\t.*\n/m, "") })
   );
   const { out, exitCode, line } = await runSetup();
-  assert.match(line("Model check:"), /degraded/);
-  assert.match(out, /fall back/);
-  assert.doesNotMatch(out, /Ready\. Try/);
-  assert.notEqual(exitCode, 1);
-});
-
-test("setup model check FAILS and exits 1 when neither pinned model is listed", async () => {
-  setRunReviewForTest(canaryOk);
-  setRunCommandForTest(fakeCommands({ models: "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n" }));
-  const { out, exitCode, line } = await runSetup();
   assert.match(line("Model check:"), /FAILED/);
-  assert.match(out, /Neither review model is listed/);
+  assert.match(out, /The review model is not listed/);
   assert.match(out, /agy models/);
   assert.equal(exitCode, 1);
 });
@@ -229,8 +215,7 @@ test("setup --json includes promptOk, modelStatus, per-model results and quota",
   assert.equal(parsed.authOk, true);
   assert.equal(parsed.transportOk, true);
   assert.equal(parsed.modelStatus, "ok");
-  assert.deepEqual(parsed.models.primary, { model: PRIMARY_REVIEW_MODEL, ok: true });
-  assert.deepEqual(parsed.models.fallback, { model: FALLBACK_REVIEW_MODEL, ok: true });
+  assert.deepEqual(parsed.models.review, { model: REVIEW_MODEL, ok: true });
   assert.deepEqual(parsed.models.ask, { model: "gemini-3.8-flash-medium", ok: true });
   assert.deepEqual(parsed.quota, {
     weekly: { remainingPercent: 97, resetTime: "2026-10-11T07:37:02Z" },

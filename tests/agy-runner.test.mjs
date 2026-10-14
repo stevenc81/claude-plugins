@@ -93,20 +93,20 @@ test("passes --model and --json-schema before --print", async () => {
   const { captured, spawnFn } = captureArgs(proc);
   const result = await runReview({
     prompt: "x",
-    model: "gemini-3.1-pro-high",
+    model: "gemini-3.8-flash-high",
     jsonSchema: "/abs/schema.json",
     promptTimeoutMs: 60_000,
     spawnFn
   });
   assert.deepEqual(captured.args, [
-    "--model=gemini-3.1-pro-high",
+    "--model=gemini-3.8-flash-high",
     "--output-format=json",
     "--disable-slash-commands",
     "--json-schema=/abs/schema.json",
     "--print=x",
     "--print-timeout=60s"
   ]);
-  assert.equal(result.model, "gemini-3.1-pro-high");
+  assert.equal(result.model, "gemini-3.8-flash-high");
 });
 
 test("rounds prompt-timeout up to the nearest second for agy's Go duration", async () => {

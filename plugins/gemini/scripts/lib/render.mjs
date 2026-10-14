@@ -15,16 +15,10 @@ function formatTokens(tokens) {
   return ` (tokens: ${input ?? "?"} in / ${output ?? "?"} out)`;
 }
 
-function formatHeader({ reviewLabel, target, tokens, agentVersion, model, fellBack, requestedModel }) {
+function formatHeader({ reviewLabel, target, tokens, agentVersion, model }) {
   const parts = [`${reviewLabel}: ${target}`];
   if (agentVersion) parts.push(`agy ${agentVersion}`);
-  if (model) {
-    parts.push(
-      fellBack && requestedModel
-        ? `model: ${model} (fell back from ${requestedModel})`
-        : `model: ${model}`
-    );
-  }
+  if (model) parts.push(`model: ${model}`);
   return parts.join("  |  ") + formatTokens(tokens);
 }
 
@@ -54,8 +48,6 @@ export function renderReviewResult({
   tokens,
   agentVersion,
   model = null,
-  requestedModel = null,
-  fellBack = false,
   deniedActions = [],
   timedOut = false
 }) {
@@ -69,9 +61,7 @@ export function renderReviewResult({
     target: label,
     tokens,
     agentVersion,
-    model,
-    requestedModel,
-    fellBack
+    model
   });
   const lines = [header, "=".repeat(Math.min(header.length, 80)), ""];
   const refused = describeDeniedActions(deniedActions);

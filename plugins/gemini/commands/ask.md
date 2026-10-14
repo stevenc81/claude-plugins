@@ -34,7 +34,7 @@ Foreground flow:
 - Set the `Bash` timeout to 600000 (10 minutes). `--timeout-ms 540000` gives the model 9 minutes, so a long run comes back marked as cut off before the `Bash` limit kills it.
 - Invoke with a quoted heredoc so the prompt is piped in literally (no shell expansion inside it):
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" ask --timeout-ms 540000 --model 'gemini-3.1-pro-high' --file '/Users/me/Bob'\''s notes.md' <<'GEMINI_ASK_INPUT_EOF'
+node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" ask --timeout-ms 540000 --model 'gemini-3.8-flash-high' --file '/Users/me/Bob'\''s notes.md' <<'GEMINI_ASK_INPUT_EOF'
 <the prompt, verbatim>
 GEMINI_ASK_INPUT_EOF
 ```
@@ -46,7 +46,7 @@ Background flow:
 - Launch with `Bash` in the background using the same heredoc form, without `--timeout-ms`:
 ```typescript
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" ask --model 'gemini-3.1-pro-high' --file '/Users/me/notes.md' <<'GEMINI_ASK_INPUT_EOF'
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" ask --model 'gemini-3.8-flash-high' --file '/Users/me/notes.md' <<'GEMINI_ASK_INPUT_EOF'
 <the prompt, verbatim>
 GEMINI_ASK_INPUT_EOF`,
   description: "Gemini ask",

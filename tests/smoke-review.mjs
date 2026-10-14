@@ -38,9 +38,9 @@ async function main() {
     [COMPANION, "review", "--json"],
     {
       encoding: "utf8",
-      // 5 minutes per model call; the hard limit covers primary + fallback.
+      // 5 minutes for the model call; the hard limit adds room for agy start-up.
       env: { ...process.env, GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS: "300000" },
-      timeout: 720_000,
+      timeout: 420_000,
       input: SYNTHETIC_RESPONSE
     }
   );
@@ -55,7 +55,7 @@ async function main() {
   console.log(`completed in ${elapsed}s`);
   console.log(`  stopReason: ${payload.stopReason}`);
   console.log(`  input bytes: ${payload.target.inputBytes}`);
-  console.log(`  model: ${payload.model}${payload.fellBack ? " (fell back)" : ""}`);
+  console.log(`  model: ${payload.model}`);
   console.log(`  timedOut: ${payload.timedOut}`);
   console.log(`  refused tools: ${JSON.stringify(payload.deniedActions ?? [])}`);
 

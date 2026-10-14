@@ -4,9 +4,7 @@ import assert from "node:assert/strict";
 import { handleReview, setRunReviewForTest } from "../plugins/gemini/scripts/gemini-companion.mjs";
 import {
   ConfigError,
-  AgyAuthError,
-  AgyConnectionError,
-  AgyModelError
+  AgyConnectionError
 } from "../plugins/gemini/scripts/lib/errors.mjs";
 
 function captureStdout(fn) {
@@ -107,7 +105,7 @@ test("happy path: renders structured output with claims and sources, passes the 
   assert.match(out, /tokens: 34702 in \/ 407 out/);
   assert.doesNotMatch(out, /refused/);
   // The hardcoded primary model is surfaced in the header.
-  assert.match(out, /model: gemini-3\.1-pro-high/);
+  assert.match(out, /model: gemini-3\.8-flash-high/);
 });
 
 test("grounding footer warns when no tool calls AND no claim sources", async () => {
@@ -143,9 +141,8 @@ test("--json mode emits stable payload with model selection fields", async () =>
   assert.equal(payload.timedOut, false);
   assert.equal(payload.tokens.output_tokens, 407);
   assert.equal(Object.prototype.hasOwnProperty.call(payload, "toolCalls"), false);
-  assert.equal(payload.model, "gemini-3.1-pro-high");
-  assert.equal(payload.requestedModel, "gemini-3.1-pro-high");
-  assert.equal(payload.fellBack, false);
+  assert.equal(payload.model, "gemini-3.8-flash-high");
+  assert.equal(Object.prototype.hasOwnProperty.call(payload, "fellBack"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(payload, "downgraded"), false);
 });
 
@@ -220,7 +217,7 @@ test("header shows the agy version and the model", async () => {
   const out = await captureStdout(() => handleReview([], { stdin: "claim body" }));
   assert.match(out, /agy 1\.0\.0/);
   // The plugin now selects the model, so the header names it.
-  assert.match(out, /model: gemini-3\.1-pro-high/);
+  assert.match(out, /model: gemini-3\.8-flash-high/);
   assert.doesNotMatch(out, /downgraded from/i);
 });
 
@@ -233,56 +230,28 @@ test("rejects --model flag (no longer supported)", async () => {
   );
 });
 
-test("uses gemini-3.1-pro-high as the primary model and surfaces it in the header", async () => {
+test("uses gemini-3.8-flash-high and surfaces it in the header", async () => {
   let usedModel;
   setRunReviewForTest(async (args) => {
     usedModel = args.model;
     return { ...okPayload, model: args.model };
   });
   const out = await captureStdout(() => handleReview([], { stdin: "a claim to check" }));
-  assert.equal(usedModel, "gemini-3.1-pro-high");
-  assert.match(out, /model: gemini-3\.1-pro-high/);
-});
-
-test("falls back to gemini-3.8-flash-high when the primary model fails", async () => {
-  const calls = [];
-  setRunReviewForTest(async (args) => {
-    calls.push(args.model);
-    if (args.model === "gemini-3.1-pro-high") {
-      throw new AgyConnectionError("primary model unavailable");
-    }
-    return { ...okPayload, model: args.model };
-  });
-  const out = await captureStdout(() => handleReview([], { stdin: "a claim to check" }));
-  assert.deepEqual(calls, ["gemini-3.1-pro-high", "gemini-3.8-flash-high"]);
+  assert.equal(usedModel, "gemini-3.8-flash-high");
   assert.match(out, /model: gemini-3\.8-flash-high/);
-  assert.match(out, /fell back from gemini-3\.1-pro-high/);
 });
 
-test("does not fall back on an auth error; surfaces it after a single attempt", async () => {
+test("a failed run is not retried on another model; the error surfaces as is", async () => {
   const calls = [];
   setRunReviewForTest(async (args) => {
     calls.push(args.model);
-    throw new AgyAuthError("agy is not signed in");
+    throw new AgyConnectionError("service unavailable");
   });
   await assert.rejects(
     () => handleReview([], { stdin: "a claim to check" }),
-    (err) => err instanceof AgyAuthError
+    (err) => err instanceof AgyConnectionError && /service unavailable/.test(err.message)
   );
-  assert.deepEqual(calls, ["gemini-3.1-pro-high"]);
-});
-
-test("falls back when agy does not know the primary model", async () => {
-  const calls = [];
-  setRunReviewForTest(async (args) => {
-    calls.push(args.model);
-    if (args.model === "gemini-3.1-pro-high") {
-      throw new AgyModelError('agy does not know the model "gemini-3.1-pro-high".');
-    }
-    return { ...okPayload, model: args.model };
-  });
-  await captureStdout(() => handleReview([], { stdin: "a claim to check" }));
-  assert.deepEqual(calls, ["gemini-3.1-pro-high", "gemini-3.8-flash-high"]);
+  assert.deepEqual(calls, ["gemini-3.8-flash-high"]);
 });
 
 test("empty output with refused tools names the tools instead of a bare empty-output message", async () => {
@@ -404,27 +373,12 @@ test("review.md's single-quote rule hands the shell's argv over unchanged", () =
   assert.deepEqual(JSON.parse(out), ["--wait", TRICKY_FOCUS]);
 });
 
-test("the fallback gets only the time left in the budget", async () => {
+test("the run gets the whole --timeout-ms budget", async () => {
   const timeouts = [];
   setRunReviewForTest(async (args) => {
     timeouts.push(args.promptTimeoutMs);
-    if (args.model === "gemini-3.1-pro-high") throw new AgyConnectionError("primary failed");
     return { ...okPayload, model: args.model };
   });
   await captureStdout(() => handleReview(["--timeout-ms", "600000"], { stdin: "x" }));
-  assert.equal(timeouts[0], 600000);
-  assert.ok(timeouts[1] <= 600000 && timeouts[1] > 590000, `fallback got ${timeouts[1]}`);
-});
-
-test("the fallback is skipped, and the error says so, when under 60 s is left", async () => {
-  const calls = [];
-  setRunReviewForTest(async (args) => {
-    calls.push(args.model);
-    throw new AgyConnectionError("primary failed");
-  });
-  await assert.rejects(
-    () => handleReview(["--timeout-ms", "50000"], { stdin: "x" }),
-    (err) => /primary failed/.test(err.message) && /Skipped the fallback model 'gemini-3\.8-flash-high'/.test(err.message)
-  );
-  assert.deepEqual(calls, ["gemini-3.1-pro-high"]);
+  assert.deepEqual(timeouts, [600000]);
 });

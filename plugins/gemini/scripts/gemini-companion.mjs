@@ -32,8 +32,6 @@ const MAX_REVIEW_INPUT_BYTES = 40_000;
 const MAX_ASK_PROMPT_BYTES = 100_000;
 // The --dir file list also travels in that argv entry, so it gets its own cap.
 const MAX_DIR_LIST_BYTES = 20_000;
-// Below this, a fallback review run would be cut off before it could finish.
-const MIN_FALLBACK_MS = 60_000;
 // Headless agy cannot ask for permission, so one refused tool ends the run with
 // no answer at all. Shell commands, file writes and subagents are refused.
 // Page reads work only if the user allows read_url in their agy settings.
@@ -67,15 +65,12 @@ function listFolderFiles(dir) {
   return out.sort();
 }
 
-// Model policy for /gemini:review: prefer Gemini 3.1 Pro (the deepest grounding
-// tier agy exposes); if that run fails for any reason other than auth, retry
-// once with Gemini 3.8 Flash (the current fast fallback).
+// Model policy for /gemini:review: one model, no fallback (see the README FAQ).
 //
 // These are the slug IDs printed by `agy models`. The trailing effort tier
 // (`-high`) is part of the slug; agy also has a separate `--effort` flag we do
 // not use. Keep these in sync with `agy models`; `/gemini:setup` checks them.
-export const PRIMARY_REVIEW_MODEL = "gemini-3.1-pro-high";
-export const FALLBACK_REVIEW_MODEL = "gemini-3.8-flash-high";
+export const REVIEW_MODEL = "gemini-3.8-flash-high";
 export const DEFAULT_ASK_MODEL = "gemini-3.8-flash-medium";
 
 let runReviewImpl = realRunReview;
@@ -202,35 +197,16 @@ export async function handleReview(argv, { stdin = null } = {}) {
 
   const agyVersion = binaryAvailableImpl("agy", ["--version"], { cwd: neutralCwd }).detail;
 
-  // The timeout is the budget for both attempts: the fallback gets only what is left.
-  const budgetMs = promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
-  const deadline = Date.now() + budgetMs;
-  const runArgs = {
-    prompt,
-    cwd: neutralCwd,
-    agentVersion: agyVersion,
-    jsonSchema: schemaPath("review-output"),
-    promptTimeoutMs: budgetMs
-  };
-
   let result;
-  let usedModel = PRIMARY_REVIEW_MODEL;
-  let fellBack = false;
   try {
-    try {
-      result = await runReviewImpl({ ...runArgs, model: PRIMARY_REVIEW_MODEL });
-    } catch (err) {
-      // A different model won't fix an auth problem, so surface that directly.
-      if (err instanceof AgyAuthError) throw err;
-      const leftMs = deadline - Date.now();
-      if (leftMs < MIN_FALLBACK_MS) {
-        err.message += ` Skipped the fallback model '${FALLBACK_REVIEW_MODEL}': less than ${MIN_FALLBACK_MS / 1000} seconds of the time budget were left.`;
-        throw err;
-      }
-      usedModel = FALLBACK_REVIEW_MODEL;
-      fellBack = true;
-      result = await runReviewImpl({ ...runArgs, model: FALLBACK_REVIEW_MODEL, promptTimeoutMs: leftMs });
-    }
+    result = await runReviewImpl({
+      prompt,
+      cwd: neutralCwd,
+      agentVersion: agyVersion,
+      jsonSchema: schemaPath("review-output"),
+      promptTimeoutMs: promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS,
+      model: REVIEW_MODEL
+    });
   } finally {
     if (shouldCleanupCwd) removeNeutralCwd(neutralCwd);
   }
@@ -251,9 +227,7 @@ export async function handleReview(argv, { stdin = null } = {}) {
       JSON.stringify(
         {
           target,
-          model: usedModel,
-          requestedModel: PRIMARY_REVIEW_MODEL,
-          fellBack,
+          model: REVIEW_MODEL,
           agentVersion: result.agentVersion,
           stopReason: result.stopReason,
           timedOut,
@@ -275,9 +249,7 @@ export async function handleReview(argv, { stdin = null } = {}) {
     target,
     tokens: result.tokens,
     agentVersion: result.agentVersion,
-    model: usedModel,
-    requestedModel: PRIMARY_REVIEW_MODEL,
-    fellBack,
+    model: REVIEW_MODEL,
     deniedActions,
     timedOut
   });
@@ -323,35 +295,22 @@ function checkPinnedModels({ ids, error }) {
     return {
       status: "unknown",
       detail: `could not run \`agy models\`: ${error}`,
-      primaryOk: null,
-      fallbackOk: null,
+      reviewOk: null,
       askOk: null
     };
   }
-  const primaryOk = ids.has(PRIMARY_REVIEW_MODEL);
-  const fallbackOk = ids.has(FALLBACK_REVIEW_MODEL);
+  const reviewOk = ids.has(REVIEW_MODEL);
   const askOk = ids.has(DEFAULT_ASK_MODEL);
-  let status;
-  let detail;
-  if (primaryOk && fallbackOk) {
-    status = "ok";
-    detail = `primary '${PRIMARY_REVIEW_MODEL}' and fallback '${FALLBACK_REVIEW_MODEL}' are listed`;
-  } else if (!primaryOk && !fallbackOk) {
-    status = "failed";
-    detail = `neither review model is listed (primary '${PRIMARY_REVIEW_MODEL}', fallback '${FALLBACK_REVIEW_MODEL}')`;
-  } else if (!primaryOk) {
-    status = "degraded";
-    detail = `primary '${PRIMARY_REVIEW_MODEL}' is not listed; reviews will fall back to '${FALLBACK_REVIEW_MODEL}'`;
-  } else {
-    status = "degraded";
-    detail = `fallback '${FALLBACK_REVIEW_MODEL}' is not listed; primary '${PRIMARY_REVIEW_MODEL}' still works`;
-  }
+  let status = reviewOk ? "ok" : "failed";
+  let detail = reviewOk
+    ? `review model '${REVIEW_MODEL}' is listed`
+    : `review model '${REVIEW_MODEL}' is not listed`;
   // A missing ask default only affects /gemini:ask, so it degrades, never fails.
   if (!askOk) {
     if (status === "ok") status = "degraded";
     detail += `; /gemini:ask default '${DEFAULT_ASK_MODEL}' is not listed`;
   }
-  return { status, detail, primaryOk, fallbackOk, askOk };
+  return { status, detail, reviewOk, askOk };
 }
 
 export async function handleSetup(argv) {
@@ -405,7 +364,7 @@ export async function handleSetup(argv) {
       );
     } else if (modelCheck.status === "failed") {
       nextSteps.push(
-        "Neither review model is listed. Run `agy models` and update PRIMARY_REVIEW_MODEL / FALLBACK_REVIEW_MODEL in scripts/gemini-companion.mjs to current IDs."
+        "The review model is not listed. Run `agy models` and update REVIEW_MODEL in scripts/gemini-companion.mjs to a current ID."
       );
     } else if (modelCheck.status === "degraded") {
       nextSteps.push(
@@ -428,8 +387,7 @@ export async function handleSetup(argv) {
             promptOk,
             modelStatus: modelCheck.status,
             models: {
-              primary: { model: PRIMARY_REVIEW_MODEL, ok: modelCheck.primaryOk },
-              fallback: { model: FALLBACK_REVIEW_MODEL, ok: modelCheck.fallbackOk },
+              review: { model: REVIEW_MODEL, ok: modelCheck.reviewOk },
               ask: { model: DEFAULT_ASK_MODEL, ok: modelCheck.askOk }
             },
             quota,

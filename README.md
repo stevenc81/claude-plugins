@@ -68,7 +68,7 @@ How it works:
 - The report ends with a `[grounding]` footer. It counts the cited sources and lists any tools `agy` refused.
 - Input is capped at 40KB. Longer content is cut on a line boundary, and the report says so.
 
-Model: reviews run on `gemini-3.1-pro-high`. If that run fails for any reason other than sign-in, the plugin retries once on `gemini-3.8-flash-high`. The timeout covers both runs: the retry gets only the time left, and is skipped when less than 60 seconds remain. The header and the `--json` output (`model`, `requestedModel`, `fellBack`) show which model answered.
+Model: reviews run on `gemini-3.8-flash-high`, with no fallback model. The header and the `--json` output (`model`) show the model.
 
 Limitations:
 - Search quality depends on what the agent finds. Niche or paywalled sources may be missed. Read `uncertain` as "search did not find it," not "it is wrong."
@@ -93,7 +93,7 @@ Sends a prompt to a model and returns its answer exactly as the model wrote it.
 
 ```bash
 /gemini:ask what changed in the latest Node.js release?
-/gemini:ask --model gemini-3.1-pro-high explain this error in plain words
+/gemini:ask --model gemini-3.8-flash-high explain this error in plain words
 /gemini:ask --file ./notes.md --file ./plan.md which plan is riskier?
 /gemini:ask --dir ./core/libs/imgqsort --dir ./core/libs/database/haar how do the blur score and duplicate search work?
 /gemini:ask --json summarize this thread
@@ -126,7 +126,7 @@ Sends a prompt to a model and returns its answer exactly as the model wrote it.
 Setup spends one model call. It sends a canary prompt ("Reply with the single word OK") and checks that the reply echoes it. That proves sign-in works and the prompt really reached the model. A CLI change that makes `agy` exit 0 without seeing the prompt shows up as `Prompt check: FAILED`.
 
 Two free checks run alongside it:
-- **Model check** reads `agy models` and looks for the two review models and the `/gemini:ask` default. `ok` means all three are listed. `degraded` means one is missing: reviews still run on the other review model, or only `/gemini:ask` without `--model` is affected. `FAILED` (exit 1) means both review models are missing. `unknown` means `agy models` could not run.
+- **Model check** reads `agy models` and looks for the review model and the `/gemini:ask` default. `ok` means both are listed. `degraded` means only the `/gemini:ask` default is missing, which affects `/gemini:ask` without `--model`. `FAILED` (exit 1) means the review model is missing. `unknown` means `agy models` could not run.
 - **Gemini quota** reads `agy -p /usage` and shows the weekly and 5-hour remaining percent with reset times. If that call fails, setup still runs and shows the quota as unknown. `--json` includes it as `quota`.
 
 ## Configuration
@@ -161,9 +161,9 @@ Yes. This plugin is Antigravity-specific and runs independently of other plugins
 
 ### Which model runs the review?
 
-`gemini-3.1-pro-high`. If that run fails for any reason other than sign-in, the plugin retries once on `gemini-3.8-flash-high`, and the report says so. Reviews have no `--model` flag; `/gemini:ask` does.
+`gemini-3.8-flash-high`. Reviews have no `--model` flag; `/gemini:ask` does. Gemini 3.1 Pro left `agy` in October 2026, so the plugin has no second Gemini model to fall back to.
 
-As of `agy` 1.3.3, `agy models` lists `gemini-3.8-flash-{high,medium,low}`, `gemini-3.7-flash-{high,medium,low}`, `gemini-3.6-flash-{high,medium,low}`, `gemini-3.1-pro-{high,low}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}` and `gpt-oss-120b-medium`. `/gemini:setup` checks both review models and the `/gemini:ask` default, so a rename shows up there first.
+As of `agy` 1.3.5, `agy models` lists `gemini-3.8-flash-{high,medium,low}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}` and `gpt-oss-120b-medium`. `/gemini:setup` checks the review model and the `/gemini:ask` default, so a rename shows up there first.
 
 ### Why is a grounded review slow?
 
@@ -180,7 +180,7 @@ On May 19, 2026 at Google I/O, Google announced that Gemini CLI was being retire
 - **Transport.** Now spawns `agy` in print mode and reads its JSON output. The previous ACP JSON-RPC handshake (`initialize`, `session/new`, `session/set_mode`, `session/set_model`, `session/prompt`, `session/cancel`, `session/update`) is gone; `agy` does not expose ACP. Since agy 1.1.x, `--print` takes the prompt as its value. Bare `--print` with the prompt on stdin exits 2 with `flag needs an argument`, because stdin is ignored in print mode. So the plugin passes `--print=<prompt>`. It needs agy 1.3.x or later.
 - **Plan mode.** Removed. Headless `agy` cannot ask for permission, so it refuses file writes, commands and page fetches. Reviews stay read-only without a session mode.
 - **Tool-call observability.** Lost. `agy` does not report which tools ran. The `[grounding]` footer counts cited sources and lists any tools `agy` refused.
-- **Model selection.** Reviews pin the model: `gemini-3.1-pro-high`, with a `gemini-3.8-flash-high` fallback, passed as `--model=<id>`. Model IDs are the ones `agy models` prints. `/gemini:ask` takes any of them with `--model`.
+- **Model selection.** Reviews pin the model, `gemini-3.8-flash-high`, passed as `--model=<id>`. Model IDs are the ones `agy models` prints. `/gemini:ask` takes any of them with `--model`.
 - **Streaming progress.** Lost. `agy --print` returns the full response in one shot. The default timeout is 20 minutes.
 - **Auth.** Now uses Google OAuth via `agy`. `GEMINI_API_KEY` and `gemini auth login` are no longer used.
 - **Slash commands.** `/gemini:review` and `/gemini:setup` still work. `/gemini:ask` is new.
