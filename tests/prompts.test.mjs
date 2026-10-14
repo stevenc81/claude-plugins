@@ -116,9 +116,10 @@ test("review template is well-formed: every closing tag has a matching opening t
   assert.deepEqual(open, [], `unclosed opening tag(s): ${open.map((n) => `<${n}>`).join(", ")}`);
 });
 
-test("foreground command flows cap the model run at 9 minutes, under the 10-minute Bash limit", () => {
-  const commandsDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "plugins", "gemini", "commands");
-  for (const name of ["review.md", "ask.md"]) {
+const commandsDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "plugins", "gemini", "commands");
+
+test("the ask foreground flow caps the model run at 9 minutes, under the 10-minute Bash limit", () => {
+  for (const name of ["ask.md"]) {
     const text = fs.readFileSync(path.join(commandsDir, name), "utf8");
     const foreground = text.slice(text.indexOf("Foreground flow:"), text.indexOf("Background flow:"));
     const background = text.slice(text.indexOf("Background flow:")).match(/command: `([^\n]*)/)[1];
@@ -127,5 +128,22 @@ test("foreground command flows cap the model run at 9 minutes, under the 10-minu
     assert.doesNotMatch(text, /PROMPT_TIMEOUT_MS=/, name);
     assert.match(foreground, /600000/, name);
     assert.doesNotMatch(background, /timeout-ms/, name);
+  }
+});
+
+test("the review command always runs in the background with the full time budget", () => {
+  const text = fs.readFileSync(path.join(commandsDir, "review.md"), "utf8");
+  assert.doesNotMatch(text, /Foreground flow:/);
+  const command = text.match(/command: `([^\n]*)/)[1];
+  // The command starts with `node` so it matches `allowed-tools: Bash(node:*)`.
+  assert.match(command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}/);
+  assert.doesNotMatch(command, /timeout-ms/);
+  assert.match(text, /run_in_background: true/);
+});
+
+test("background flows tell a subagent to hold its one final report until the task finishes", () => {
+  for (const name of ["review.md", "ask.md"]) {
+    const text = fs.readFileSync(path.join(commandsDir, name), "utf8");
+    assert.match(text, /If you are a subagent, do not send your final report yet/, name);
   }
 });

@@ -53,5 +53,5 @@ GEMINI_ASK_INPUT_EOF`,
   run_in_background: true
 })
 ```
-- After launching, tell the user: "Gemini ask started in the background. You will be notified when it finishes."
+- After launching, tell the user: "Gemini ask started in the background. You will be notified when it finishes." Then stop. If you are a subagent, do not send your final report yet: a subagent sends only one report, so a report sent now loses the ask output. You are woken when the task finishes.
 - When it finishes, return its output verbatim.

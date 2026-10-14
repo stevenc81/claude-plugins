@@ -4,11 +4,15 @@ Use the Antigravity CLI (`agy`) from inside Claude Code to fact-check with live 
 
 > **Heads up:** This plugin previously spawned `gemini --acp` and spoke ACP (JSON-RPC) over stdio. Google retired Gemini CLI for free/Pro/Ultra users on June 18, 2026 and replaced it with [Antigravity CLI](https://antigravity.google) (`agy`), built in Go. This plugin now runs `agy --print` and reads its JSON output. The slash commands carry over. See [Migration notes](#migration-notes-gemini-cli--antigravity-cli) below.
 
+## Goal
+
+This plugin has one goal: to work reliably when Claude Code agents call it during multi-agent work, such as the author's `orchestrate` skill. The lead session or a subagent must always get Gemini's result back, or a clear error it can act on. Check every change against this goal.
+
 ## What you get
 
 - `/gemini:review` fact-checks content from the current conversation. `agy` runs live web searches and returns structured findings: which claims are supported, uncertain, or contradicted, with source URLs.
 - `/gemini:ask` sends any prompt to a model through `agy` and returns the answer as is. You can attach files.
-- `/gemini:setup` checks that `agy` is installed and signed in, that the review models exist, and how much Gemini quota you have left.
+- `/gemini:setup` checks that `agy` is installed and signed in, that the review model exists, and how much Gemini quota you have left.
 
 ## Requirements
 
@@ -43,7 +47,6 @@ Fact-checks content from the current conversation with live web grounding. By de
 
 ```bash
 /gemini:review
-/gemini:review --wait
 /gemini:review check the second paragraph above
 /gemini:review focus on the version numbers
 ```
@@ -55,10 +58,7 @@ Anything after `/gemini:review` is plain natural language, not fixed syntax. Cla
 
 When another skill or agent calls `/gemini:review` and gives it text, it reviews exactly that text.
 
-Flags:
-- `--wait` runs the review in the foreground.
-- `--background` runs it as a background task. Claude Code tells you when it finishes.
-- With neither flag, content over 5,000 characters runs in the background and shorter content runs in the foreground.
+The review always runs as a background task, and Claude Code tells you when it finishes. A review of six short claims took 11.5 minutes in October 2026, and a foreground run stops after 9 minutes. The run time depends on the number of claims, not the length of the text.
 
 How it works:
 - Claude pipes the selected text to the companion script through a quoted heredoc. No temp files, no copy and paste.

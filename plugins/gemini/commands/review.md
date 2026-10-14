@@ -1,6 +1,6 @@
 ---
 description: Fact-check conversation content via Antigravity CLI with live web grounding
-argument-hint: '[--wait|--background] [focus text]'
+argument-hint: '[focus text]'
 disable-model-invocation: false
 allowed-tools: Bash(node:*)
 ---
@@ -23,39 +23,25 @@ Input handling:
 - Pass the selected content verbatim via stdin using a quoted heredoc. Do not paraphrase or abridge it.
 - If there is nothing suitable to review (e.g., the user gave no reference and this is the first message of the session), stop and tell the user: "Nothing to review. Point me at the text you want audited (e.g., 'review your last reply' or paste the content), then rerun /gemini:review."
 
-Execution mode rules:
-- If the raw arguments include `--wait`, run the review in the foreground.
-- If the raw arguments include `--background`, run the review in a Claude background task.
-- Otherwise, count the characters in the selected content. Over 5,000 characters, run in the background. Otherwise, run in the foreground.
-
 Building the command:
 - Do not paste `$ARGUMENTS` into the shell command. Build the arguments yourself.
-- Pass each flag from the raw arguments as its own argument: `--wait`, `--background`, `--json`.
+- Drop `--wait` and `--background` from the raw arguments. Pass `--json` as its own argument.
 - Pass the rest of the raw arguments (the focus text) as ONE single-quoted argument. Write each `'` inside it as `'\''`. Leave it out when there is no focus text.
-- Example: for the raw arguments `--wait check Node's "LTS" date`, the arguments are `--wait 'check Node'\''s "LTS" date'`.
+- Example: for the raw arguments `check Node's "LTS" date`, the arguments are `'check Node'\''s "LTS" date'`.
 
-Foreground flow:
-- Set the `Bash` timeout to 600000 (10 minutes). `--timeout-ms 540000` gives the model 9 minutes in total, so a long run comes back marked as cut off before the `Bash` limit kills it.
-- Invoke with a quoted heredoc so the selected content is piped in literally (no shell expansion inside the content):
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" review --timeout-ms 540000 --wait 'check Node'\''s "LTS" date' <<'GEMINI_REVIEW_INPUT_EOF'
-<the full text of the content to review, verbatim>
-GEMINI_REVIEW_INPUT_EOF
-```
-- Return the command's stdout verbatim, exactly as-is.
-- Do not paraphrase, summarize, or add commentary before or after it.
-- Do not edit any file or follow up on any finding.
-
-Background flow:
-- Launch the review with `Bash` in the background using the same heredoc form, without `--timeout-ms`:
+Flow:
+- Always launch the review with `Bash` in the background, even when the raw arguments include `--wait`. A review of a few short claims can take more than 10 minutes, and a foreground `Bash` call stops at 10.
+- Use a quoted heredoc, so the content is piped in literally with no shell expansion:
 ```typescript
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" review --background 'check the "LTS" date' <<'GEMINI_REVIEW_INPUT_EOF'
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" review 'check the "LTS" date' <<'GEMINI_REVIEW_INPUT_EOF'
 <the full text of the content to review, verbatim>
 GEMINI_REVIEW_INPUT_EOF`,
   description: "Gemini review",
   run_in_background: true
 })
 ```
-- After launching, tell the user: "Gemini review started in the background. You will be notified when it finishes."
-- When it finishes, return its output verbatim.
+- After launching, tell the user: "Gemini review started in the background. You will be notified when it finishes." Then stop. If you are a subagent, do not send your final report yet: a subagent sends only one report, so a report sent now loses the review output. You are woken when the task finishes.
+- When it finishes, return its stdout verbatim, exactly as-is.
+- Do not paraphrase, summarize, or add commentary before or after it.
+- Do not edit any file or follow up on any finding.
