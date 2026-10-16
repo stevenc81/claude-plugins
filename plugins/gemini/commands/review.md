@@ -2,7 +2,7 @@
 description: Fact-check conversation content via Antigravity CLI with live web grounding
 argument-hint: '[--model <id>] [focus text]'
 disable-model-invocation: false
-allowed-tools: Bash(node:*)
+allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" *)
 ---
 
 Run a grounded fact-check of content from the current conversation via `agy --print` (Antigravity CLI). The agent runs live web searches and returns structured findings: which claims are supported, uncertain, or contradicted, with source URLs, plus any reasoning issues.
@@ -21,6 +21,7 @@ Input handling:
   - If another skill or agent calls this command and gives you the text to review, review exactly that text.
   - Otherwise, default to the full text of your immediately previous assistant turn.
 - Pass the selected content verbatim via stdin using a quoted heredoc. Do not paraphrase or abridge it.
+- Make a new heredoc end marker for each call: `GEMINI_EOF_` and 8 random capital letters or digits. Never reuse the marker from the example. If a line of the content equals the marker, make a new one. A line that equals the marker ends the input early, and the shell runs the lines after it as commands.
 - If there is nothing suitable to review (e.g., the user gave no reference and this is the first message of the session), stop and tell the user: "Nothing to review. Point me at the text you want audited (e.g., 'review your last reply' or paste the content), then rerun /gemini:review."
 
 Building the command:
@@ -36,9 +37,9 @@ Flow:
 - Use a quoted heredoc, so the content is piped in literally with no shell expansion:
 ```typescript
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" review 'check the "LTS" date' <<'GEMINI_REVIEW_INPUT_EOF'
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" review 'check the "LTS" date' <<'GEMINI_EOF_7Q2KX9WM'
 <the full text of the content to review, verbatim>
-GEMINI_REVIEW_INPUT_EOF`,
+GEMINI_EOF_7Q2KX9WM`,
   description: "Gemini review",
   run_in_background: true
 })

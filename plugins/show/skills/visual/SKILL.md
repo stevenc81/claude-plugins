@@ -15,7 +15,7 @@ Use only facts the user gave or you verified. If a fact is missing, ask or leave
 Run this setup first:
 ```
 S="<this skill's base directory>/scripts"   # Claude Code shows the base directory when the skill loads
-OUT="/tmp/claude-visual"; mkdir -p "$OUT"   # macOS clears /tmp on restart
+OUT="$(getconf DARWIN_USER_TEMP_DIR)claude-visual"; mkdir -p "$OUT"   # your private temp folder; macOS deletes files there after 3 days without use
 ```
 
 ## Image (the default)

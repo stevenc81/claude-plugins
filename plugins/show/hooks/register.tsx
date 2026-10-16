@@ -8,7 +8,6 @@ const FRAME_WIDTH = 960
 // A terminal cell's height divided by its width, in pixels (Ghostty, Iosevka).
 const CELL_ASPECT = 2.0
 const MAX_COLUMNS = 120
-const CACHE = '/tmp/claude-show'
 
 // What the tool returns as JSON text, and what a finished row draws from.
 type Shown = { kind: 'image' | 'video'; path: string; file: string; width: number; height: number }
@@ -34,6 +33,19 @@ async function run($: EngineInterface, argv: string[]) {
   return done.stdout
 }
 
+// The cache lives in this user's private temp folder (mode 700), not in the
+// shared /tmp, so another account cannot plant files or read the frames.
+let cacheDir: string | undefined
+async function cache($: EngineInterface) {
+  if (!cacheDir) {
+    const tmp = (await run($, ['getconf', 'DARWIN_USER_TEMP_DIR'])).trim().replace(/\/$/, '')
+    if (!tmp.startsWith('/')) throw new Error('no private temp folder from getconf')
+    await run($, ['mkdir', '-p', '-m', '700', `${tmp}/claude-show/posters`])
+    cacheDir = `${tmp}/claude-show`
+  }
+  return cacheDir
+}
+
 // Reads only the PNG header, so a file of any size can show.
 async function readPngSize($: EngineInterface, file: string) {
   return pngSize(hexBytes(await run($, ['xxd', '-p', '-l', '24', file])))
@@ -42,7 +54,7 @@ async function readPngSize($: EngineInterface, file: string) {
 // Splits the video into PNG frames and a wav exactly as long as the frames.
 // Each call has its own folder, deleted when it ends; the poster stays.
 async function prepare($: EngineInterface, path: string, dir: string) {
-  await run($, ['mkdir', '-p', dir, `${CACHE}/posters`])
+  await run($, ['mkdir', '-p', dir])
   await run($, ['ffmpeg', '-v', 'error', '-y', '-i', path, '-vf', `fps=${FPS},scale=${FRAME_WIDTH}:-2`, `${dir}/f%05d.png`])
   const count = (await $.fs.list(dir)).filter(f => f.name.endsWith('.png')).length
   if (count === 0) throw new Error('ffmpeg wrote no frames')
@@ -111,8 +123,8 @@ export const register: Register = on => {
     if (ext !== 'mp4') return { deny: 'only .png and .mp4 files are supported' }
 
     const id = e.tool_use_id
-    const dir = `${CACHE}/${id}`
-    const poster = `${CACHE}/posters/${id}.png`
+    const dir = `${await cache($)}/${id}`
+    const poster = `${await cache($)}/posters/${id}.png`
     let play: Playback | undefined
     let tick: { cancel: () => void } | undefined
     let isClosed = false

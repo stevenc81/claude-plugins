@@ -217,7 +217,7 @@ test("ask --dir runs agy inside the folder, lists its files and leaves the folde
       return reply();
     });
     await captureStdout(() => handleAsk(["--dir", dir], { stdin: "Where is isDuplicate?" }));
-    assert.equal(seen.cwd, dir);
+    assert.equal(seen.cwd, fs.realpathSync(dir));
     assert.ok(
       seen.prompt.includes("Files in the current folder (relative paths):\n- core/dupes.cpp\n- main.cpp\n\n"),
       "lists only regular files outside dot folders and node_modules"
@@ -272,7 +272,7 @@ test("ask --dir can repeat: agy runs in the common parent and the list covers on
         stdin: "Compare."
       })
     );
-    assert.equal(seen.cwd, path.join(root, "core/libs"));
+    assert.equal(seen.cwd, fs.realpathSync(path.join(root, "core/libs")));
     assert.ok(seen.prompt.includes("- imgqsort/blur.cpp\n- haar/haar.cpp"));
     assert.ok(!seen.prompt.includes("button.cpp"));
   } finally {
@@ -294,5 +294,21 @@ test("ask --dir refuses folders whose only common parent is the home folder", as
   } finally {
     fs.rmSync(a, { recursive: true, force: true });
     fs.rmSync(b, { recursive: true, force: true });
+  }
+});
+
+test("ask --dir refuses a folder that holds the home folder, also through '..' or another letter case", async () => {
+  setRunReviewForTest(async () => {
+    throw new Error("should not be called");
+  });
+  const parent = path.dirname(os.homedir());
+  const tries = [parent, path.join(os.homedir(), "..")];
+  if (process.platform === "darwin") tries.push(os.homedir().toUpperCase());
+  for (const d of tries) {
+    await assert.rejects(
+      () => handleAsk(["--dir", d], { stdin: "hi" }),
+      (err) => err instanceof ConfigError && /read everything/.test(err.message),
+      d
+    );
   }
 });

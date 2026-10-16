@@ -2,7 +2,7 @@
 description: Send a prompt to a Gemini model via Antigravity CLI and return its answer
 argument-hint: '[--model <id>] [--file <path>]... [--dir <folder>]... [--json] [--background] <prompt>'
 disable-model-invocation: false
-allowed-tools: Bash(node:*)
+allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" *)
 ---
 
 Send a prompt to a model through `agy --print` (Antigravity CLI) and return its answer.
@@ -25,6 +25,7 @@ Building the command:
 - Pass `--json`, `--model <id>`, each `--dir <folder>` and each `--file <path>` as their own arguments. Leave out any flag the user did not give, and leave out `--background`.
 - Single-quote each value, writing each `'` inside it as `'\''`. Example: `--file '/Users/me/Bob'\''s notes.md'`.
 - Pass the prompt verbatim via stdin using a quoted heredoc. Do not paraphrase it.
+- Make a new heredoc end marker for each call: `GEMINI_EOF_` and 8 random capital letters or digits. Never reuse the marker from the examples. If a line of the prompt equals the marker, make a new one. A line that equals the marker ends the input early, and the shell runs the lines after it as commands.
 
 Execution mode rules:
 - If the raw arguments include `--background`, run in a Claude background task.
@@ -34,9 +35,9 @@ Foreground flow:
 - Set the `Bash` timeout to 600000 (10 minutes). `--timeout-ms 540000` gives the model 9 minutes, so a long run comes back marked as cut off before the `Bash` limit kills it.
 - Invoke with a quoted heredoc so the prompt is piped in literally (no shell expansion inside it):
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" ask --timeout-ms 540000 --model 'gemini-3.8-flash-high' --file '/Users/me/Bob'\''s notes.md' <<'GEMINI_ASK_INPUT_EOF'
+node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" ask --timeout-ms 540000 --model 'gemini-3.8-flash-high' --file '/Users/me/Bob'\''s notes.md' <<'GEMINI_EOF_7Q2KX9WM'
 <the prompt, verbatim>
-GEMINI_ASK_INPUT_EOF
+GEMINI_EOF_7Q2KX9WM
 ```
 - Always keep `--timeout-ms 540000` in the foreground.
 - Return the command's stdout verbatim, exactly as-is.
@@ -46,9 +47,9 @@ Background flow:
 - Launch with `Bash` in the background using the same heredoc form, without `--timeout-ms`:
 ```typescript
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" ask --model 'gemini-3.8-flash-high' --file '/Users/me/notes.md' <<'GEMINI_ASK_INPUT_EOF'
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" ask --model 'gemini-3.8-flash-high' --file '/Users/me/notes.md' <<'GEMINI_EOF_7Q2KX9WM'
 <the prompt, verbatim>
-GEMINI_ASK_INPUT_EOF`,
+GEMINI_EOF_7Q2KX9WM`,
   description: "Gemini ask",
   run_in_background: true
 })

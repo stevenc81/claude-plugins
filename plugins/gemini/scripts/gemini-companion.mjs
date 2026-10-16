@@ -556,14 +556,19 @@ export async function handleAsk(argv, { stdin = null } = {}) {
     }
   }
   // agy runs in the folders' common parent and can read anything inside it,
-  // so refuse a parent that is the whole disk or the home folder.
-  const dir = dirs.length > 0 ? commonParent(dirs) : null;
-  if (dir && (dir === path.parse(dir).root || dir === os.homedir())) {
+  // so refuse a parent that is the home folder or holds it, such as /Users or /.
+  // Real paths stop `..` and symlink tricks; macOS and Windows ignore case.
+  const realDirs = dirs.map((d) => fs.realpathSync(d));
+  const dir = realDirs.length > 0 ? commonParent(realDirs) : null;
+  const fold = (p) => (process.platform === "darwin" || process.platform === "win32" ? p.toLowerCase() : p);
+  const home = fold(fs.realpathSync(os.homedir()));
+  const holdsHome = (p) => home === fold(p) || home.startsWith(fold(p).replace(/[\\/]$/, "") + path.sep);
+  if (dir && (dir === path.parse(dir).root || holdsHome(dir))) {
     throw new ConfigError(`The --dir folders only share ${dir}, which would let Gemini read everything in it.`, {
       suggestion: "Pass folders that sit inside one project folder."
     });
   }
-  const dirList = dirs
+  const dirList = realDirs
     .flatMap((d) => listFolderFiles(d).map((f) => path.relative(dir, path.join(d, f)).split(path.sep).join("/")))
     .map((f) => `- ${f}`)
     .join("\n");

@@ -4,13 +4,16 @@ Usage: uv run --offline --no-project --python 3.12 python frames.py video.mp4 ou
 Reads times.json next to the video (real beat start and end, written by the scene).
 Writes outdir/<beat id>.png, sampled 0.15 s before the beat ends, after its last animation.
 """
-import json, subprocess, sys, os
+import json, re, subprocess, sys, os
 
 video, out = sys.argv[1:3]
 os.makedirs(out, exist_ok=True)
 total = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                              "-of", "csv=p=0", video], capture_output=True, text=True, check=True).stdout)
 for bid, (start, end) in json.load(open(os.path.join(os.path.dirname(video), "times.json"))).items():
+    # A beat ID becomes a file name, so it must not hold a path.
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", bid):
+        sys.exit(f"bad beat id {bid!r}: use only letters, digits, _ and -")
     at = min(end - 0.15, total - 0.2)
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{at:.2f}", "-i", video,
                     "-frames:v", "1", f"{out}/{bid}.png"], check=True)

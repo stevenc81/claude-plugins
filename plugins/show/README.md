@@ -52,12 +52,13 @@ The mod does not stream the video. It prepares it first:
 
 The picture follows the sound, so the two stay in sync for the whole video. `/pause` stops `afplay`. Resume cuts the wav at the paused point and starts `afplay` again.
 
-A 3-minute video takes about 5 seconds to prepare. Its frames use about 300 MB under `/tmp/claude-show`, and the mod deletes them when the video ends.
+A 3-minute video takes about 5 seconds to prepare. Its frames use about 300 MB under `claude-show` in your private temp folder (`getconf DARWIN_USER_TEMP_DIR`), and the mod deletes them when the video ends.
 
 ## Limits
 
 - macOS only, because of `afplay`.
 - One video plays at a time. There is no seek.
+- The skill gets its Python packages from PyPI through `uv`, with no fixed versions. A bad release of one of them would run on your machine.
 - The picture size assumes a terminal cell twice as tall as it is wide, which fits Iosevka in Ghostty. If a circle shows as an oval, change `CELL_ASPECT` in `hooks/register.tsx`.
 
 ## Tests

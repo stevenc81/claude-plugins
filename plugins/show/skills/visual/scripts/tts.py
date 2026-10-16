@@ -6,7 +6,7 @@ beats.json: [{"id": "b01", "text": ["Phrase for step one.", "Phrase for step two
 Writes outdir/<id>.wav, outdir/durations.json ({"b01": 6.4, ...})
 and outdir/starts.json ({"b01": [0.35, 2.9], ...}: seconds into the wav where each phrase starts).
 """
-import json, os, sys, wave
+import json, os, re, sys, wave
 import numpy as np
 from mlx_audio.tts.utils import load_model
 
@@ -34,6 +34,11 @@ beats = json.load(open(sys.argv[1]))
 out = sys.argv[2]
 voice = sys.argv[3] if len(sys.argv) > 3 else "af_heart"
 os.makedirs(out, exist_ok=True)
+
+# A beat ID becomes a file name, so it must not hold a path.
+for b in beats:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", str(b["id"])):
+        sys.exit(f"bad beat id {b['id']!r}: use only letters, digits, _ and -")
 
 model = load_model("mlx-community/Kokoro-82M-bf16")
 durations, starts = {}, {}

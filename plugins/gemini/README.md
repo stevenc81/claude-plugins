@@ -153,6 +153,8 @@ For each call, the plugin:
 3. Checks `agy`'s stderr for its timeout notice, and on a nonzero exit for `AGY_ERROR`, unknown model, used-up quota, and sign-in errors, in that order. The quota check comes before the sign-in check, because a quota message can contain words such as "sign in"
 4. For reviews, validates the result against the schema, resolves redirect links, and renders the report
 
+Because the prompt is a command-line argument, other programs on your machine can see it with `ps` while `agy` runs. Do not send passwords, tokens or other secrets.
+
 ## FAQ
 
 ### Does this use my OpenAI / Anthropic account?

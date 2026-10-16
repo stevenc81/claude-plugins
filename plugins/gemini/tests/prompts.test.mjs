@@ -123,7 +123,7 @@ test("the ask foreground flow caps the model run at 9 minutes, under the 10-minu
     const text = fs.readFileSync(path.join(commandsDir, name), "utf8");
     const foreground = text.slice(text.indexOf("Foreground flow:"), text.indexOf("Background flow:"));
     const background = text.slice(text.indexOf("Background flow:")).match(/command: `([^\n]*)/)[1];
-    // Every command starts with `node` so it matches `allowed-tools: Bash(node:*)`.
+    // Every command starts with `node` so it matches the `allowed-tools` rule.
     assert.match(foreground, /\n(node "\$\{CLAUDE_PLUGIN_ROOT\}[^\n]*--timeout-ms 540000[^\n]*)\n/, name);
     assert.doesNotMatch(text, /PROMPT_TIMEOUT_MS=/, name);
     assert.match(foreground, /600000/, name);
@@ -135,7 +135,7 @@ test("the review command always runs in the background with the full time budget
   const text = fs.readFileSync(path.join(commandsDir, "review.md"), "utf8");
   assert.doesNotMatch(text, /Foreground flow:/);
   const command = text.match(/command: `([^\n]*)/)[1];
-  // The command starts with `node` so it matches `allowed-tools: Bash(node:*)`.
+  // The command starts with `node` so it matches the `allowed-tools` rule.
   assert.match(command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}/);
   assert.doesNotMatch(command, /timeout-ms/);
   assert.match(text, /run_in_background: true/);
@@ -145,5 +145,17 @@ test("background flows tell a subagent to hold its one final report until the ta
   for (const name of ["review.md", "ask.md"]) {
     const text = fs.readFileSync(path.join(commandsDir, name), "utf8");
     assert.match(text, /If you are a subagent, do not send your final report yet/, name);
+  }
+});
+
+test("commands pre-approve only the companion script and never paste raw arguments into the shell", () => {
+  for (const name of ["ask.md", "review.md", "setup.md"]) {
+    const text = fs.readFileSync(path.join(commandsDir, name), "utf8");
+    assert.match(text, /^allowed-tools: Bash\(node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/gemini-companion\.mjs" \*\)$/m, name);
+    assert.doesNotMatch(text, /"\$ARGUMENTS"/, name);
+  }
+  for (const name of ["ask.md", "review.md"]) {
+    const text = fs.readFileSync(path.join(commandsDir, name), "utf8");
+    assert.match(text, /Make a new heredoc end marker for each call/, name);
   }
 });
