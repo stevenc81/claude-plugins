@@ -14,7 +14,7 @@ The model facts were checked on 2026-10-16. The numbers and sources are in `evid
 If the user's answer would change the work and you cannot find it yourself, ask first. Then follow these steps in order. Before each new round of teammates, do steps 1 and 2 again.
 
 1. Pick the model and effort for each job. Follow "Pick the model".
-2. Show the user the plan: the temp folder path, then a table with one row per job: the job, the model and effort, and why. Do not wait for approval. Exception: if the user asks to review the plan first, wait.
+2. Before the first teammate starts, send the plan as a visible message: the temp folder path, then a table with one row per job: the job, the model and effort, and why. A plan in your reasoning does not count. Do not wait for approval. Exception: if the user asks to review the plan first, wait.
 3. If teammates share context, write it once to `<temp>/CONTEXT.md`. Point each prompt to it.
 4. Start the teammates, with the brief in "Teammate prompts".
 
@@ -97,7 +97,7 @@ A teammate starts with no context. Start every teammate prompt with this brief:
 - Claude: the Agent tool. Set both `model` (`opus`, `sonnet`, `haiku` or `fable`) and `effort` (low, medium, high, xhigh, max).
 - Codex, one job: `codex exec --skip-git-repo-check -C <project> -s <sandbox> -m <model> -c model_reasoning_effort=<effort> - < <temp>/prompt-<job>.md > <temp>/<job>.md`. The efforts are low, medium, high, xhigh, max and ultra.
   - Write the prompt to `<temp>/prompt-<job>.md` first. Never put the prompt in the command line: quotes, `$(...)` or backticks in it would run in the shell.
-  - Use `-s read-only` for reviews, research and checks. Use `-s workspace-write` only for a job that must change files. Then Codex can write only inside the `-C` folder and `/tmp`.
+  - Use `-s read-only` for reviews, research and checks. Use `-s workspace-write` only for a job that must change files. Then Codex can write inside the `-C` folder and in `<temp>`.
   - Without `--skip-git-repo-check`, Codex refuses to start in a folder that is not a git repo.
   - For web search, put `--search` before `exec`: `codex --search exec ...`.
   - Pass images with `-i <file>`.
@@ -146,7 +146,7 @@ If the work may run longer than one session, or a vendor stops at a usage limit:
 
 - `<temp>` is the `orchestrate/` folder in this session's scratchpad (the path is in the system prompt). Every temporary file goes there: scratch files, logs, and data downloads that are not results. In prompts and cron jobs, write the full path.
 - Results go in the project. If there is no project, ask the user where results go.
-- A reboot deletes `<temp>`, and macOS deletes files there after 3 days without use. If a long job needs to survive that, tell the user.
+- A restart of the Mac deletes `<temp>`. If a long job needs to survive a restart, tell the user.
 - When the work is done, delete `<temp>` and the hourly cron job. Keep the results. Tell the user what you deleted.
 - Delete only that folder. Never delete other files by guessing from a name.
 - Leave Codex and `agy` conversations alone: their own tools manage them.
