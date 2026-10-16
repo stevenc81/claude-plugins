@@ -49,16 +49,17 @@ Fact-checks content from the current conversation with live web grounding. By de
 /gemini:review
 /gemini:review check the second paragraph above
 /gemini:review focus on the version numbers
+/gemini:review --model gemini-4-argon-medium check the dates above
 ```
 
-Anything after `/gemini:review` is plain natural language, not fixed syntax. Claude uses it in one of two ways:
+The only flag is `--model <id>`. Anything else after `/gemini:review` is plain natural language, not fixed syntax. Claude uses it in one of two ways:
 
 - To choose what gets reviewed. Phrases like `check the second paragraph above` or `review what I just pasted` point Claude at specific text instead of its previous reply.
 - To steer attention. Phrases like `focus on the version numbers` tell the agent which claims matter most. It still reports any other real issue it finds.
 
 When another skill or agent calls `/gemini:review` and gives it text, it reviews exactly that text.
 
-The review always runs as a background task, and Claude Code tells you when it finishes. A review of six short claims took 11.5 minutes in October 2026, and a foreground run stops after 9 minutes. The run time depends on the number of claims, not the length of the text.
+The review always runs as a background task, and Claude Code tells you when it finishes. In October 2026, a review of three short claims took 93 seconds on Gemini 4 Argon and 219 seconds on Gemini 3.8 Flash. A review of six claims on Flash took 11.5 minutes. A foreground run stops after 9 minutes, and a fallback to Flash adds a second run. The run time depends on the number of claims, not the length of the text.
 
 How it works:
 - Claude pipes the selected text to the companion script through a quoted heredoc. No temp files, no copy and paste.
@@ -68,7 +69,7 @@ How it works:
 - The report ends with a `[grounding]` footer. It counts the cited sources and lists any tools `agy` refused.
 - Input is capped at 40KB. Longer content is cut on a line boundary, and the report says so.
 
-Model: reviews run on `gemini-3.8-flash-high`, with no fallback model. The header and the `--json` output (`model`) show the model.
+Model: reviews run on `gemini-4-argon-high` by default. `--model <id>` picks another model from `agy models`. If the run fails, the plugin can retry once on `gemini-3.8-flash-high`. See [Which model runs the review?](#which-model-runs-the-review) for the rules. The header and the `--json` output show which model answered and why a fallback happened.
 
 Limitations:
 - Search quality depends on what the agent finds. Niche or paywalled sources may be missed. Read `uncertain` as "search did not find it," not "it is wrong."
@@ -83,9 +84,11 @@ Output states:
 | Degraded | `parsed` is `null`, `parseError` says why, `rawOutput` holds any text the model sent | `review (N bytes, degraded)` |
 | Timed out | `timedOut` is `true`, `stopReason` is `"timeout"` | `review (N bytes, degraded)` plus a line saying the review was cut off |
 
+`model` is the model that answered. `requestedModel` is the model the plugin tried first. `fellBack` is `true` when Flash answered, and `fallbackReason` holds the error from the first run (otherwise `null`). A text report that fell back says so in the header and on the first line.
+
 `deniedActions` lists any tools `agy` refused. When a refusal left the model with no answer, `parseError` names the refused tools.
 
-The exit code is `0` in all three states, because the CLI ran. A nonzero exit means the plugin itself failed (spawn error, sign-in, unknown model, or a hard timeout). To branch on answer quality, read `parseError` and `timedOut` from `--json` output.
+The exit code is `0` in all three states, because the CLI ran. A nonzero exit means the plugin itself failed (spawn error, sign-in, unknown model, used-up quota, or a hard timeout). After a fallback, a nonzero exit means both models failed, and the error names both causes. To branch on answer quality, read `parseError` and `timedOut` from `--json` output.
 
 ### `/gemini:ask`
 
@@ -99,7 +102,8 @@ Sends a prompt to a model and returns its answer exactly as the model wrote it.
 /gemini:ask --json summarize this thread
 ```
 
-- `--model <id>` takes any ID from `agy models`. The default is `gemini-3.8-flash-medium`. An unknown ID fails with a message telling you to run `agy models`.
+- `--model <id>` takes any ID from `agy models`. The default is `gemini-3.8-flash-medium`. An unknown ID fails with a message telling you to run `agy models`. `/gemini:ask` has no fallback model.
+- Gemini 4 Argon (`gemini-4-argon-low`, `-medium`, `-high`) uses its own weekly quota. `/gemini:review` uses the same quota, so Argon asks leave fewer Argon reviews.
 - The prompt can be up to 100,000 bytes. Pass larger input with `--file`.
 - `--file <path>` can repeat. The plugin checks that each file exists and copies it into the empty temp folder that `agy` runs in. Gemini can read those copies and nothing else from the file's folder. The prompt lists the paths of the copies.
 - `--dir <folder>` gives Gemini read access to a folder, such as a source tree. It can repeat. `agy` runs in the folders' common parent, and the prompt lists the files in the given folders. The plugin refuses folders whose only common parent is `/` or your home folder. `agy` has no tool to list a folder, so the plugin builds that list. It skips names that start with `.` (such as `.git`), `node_modules` and symlinks. If the list is over 20,000 bytes, pass smaller subfolders. Use `--dir` or `--file`, not both.
@@ -126,8 +130,8 @@ Sends a prompt to a model and returns its answer exactly as the model wrote it.
 Setup spends one model call. It sends a canary prompt ("Reply with the single word OK") and checks that the reply echoes it. That proves sign-in works and the prompt really reached the model. A CLI change that makes `agy` exit 0 without seeing the prompt shows up as `Prompt check: FAILED`.
 
 Two free checks run alongside it:
-- **Model check** reads `agy models` and looks for the review model and the `/gemini:ask` default. `ok` means both are listed. `degraded` means only the `/gemini:ask` default is missing, which affects `/gemini:ask` without `--model`. `FAILED` (exit 1) means the review model is missing. `unknown` means `agy models` could not run.
-- **Gemini quota** reads `agy -p /usage` and shows the weekly and 5-hour remaining percent with reset times. If that call fails, setup still runs and shows the quota as unknown. `--json` includes it as `quota`.
+- **Model check** reads `agy models` and looks for the review model (Argon), the fallback model (Flash) and the `/gemini:ask` default. `ok` means all three are listed. `degraded` means one is missing: reviews still run on the other review model, or only `/gemini:ask` without `--model` is affected. `FAILED` (exit 1) means both review models are missing. `unknown` means `agy models` could not run. `--json` reports each model under `models.primary`, `models.fallback` and `models.ask`.
+- **Gemini quota** reads `agy -p /usage` and shows the remaining percent with reset times: the weekly and 5-hour limits for Gemini Flash, and the weekly limit for Gemini 4 Argon. If that call fails, setup still runs and shows the quota as unknown. `--json` includes it as `quota`, with Argon under `quota.argon` (`null` when `agy` does not report Argon).
 
 ## Configuration
 
@@ -146,7 +150,7 @@ For each call, the plugin:
 
 1. Runs `agy` with every flag in `--flag=value` form: `--model`, `--output-format=json`, `--disable-slash-commands`, then `--print=<prompt>` and `--print-timeout`. Reviews add `--json-schema`. The prompt is the value of `--print`, because `agy` ignores stdin in print mode
 2. Reads the JSON result: the answer (`structured_output` when a schema was used, otherwise `response`), token usage, and refused tools
-3. Checks `agy`'s stderr for its timeout notice, and on a nonzero exit for `AGY_ERROR`, unknown model, and sign-in errors, in that order
+3. Checks `agy`'s stderr for its timeout notice, and on a nonzero exit for `AGY_ERROR`, unknown model, used-up quota, and sign-in errors, in that order. The quota check comes before the sign-in check, because a quota message can contain words such as "sign in"
 4. For reviews, validates the result against the schema, resolves redirect links, and renders the report
 
 ## FAQ
@@ -161,9 +165,19 @@ Yes. This plugin is Antigravity-specific and runs independently of other plugins
 
 ### Which model runs the review?
 
-`gemini-3.8-flash-high`. Reviews have no `--model` flag; `/gemini:ask` does. Gemini 3.1 Pro left `agy` in October 2026, so the plugin has no second Gemini model to fall back to.
+`gemini-4-argon-high` by default, with one fallback to `gemini-3.8-flash-high`. `--model <id>` picks another model, for example `gemini-4-argon-medium` for a cheaper check. The fallback rules are the same for a chosen model.
 
-As of `agy` 1.3.5, `agy models` lists `gemini-3.8-flash-{high,medium,low}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}` and `gpt-oss-120b-medium`. `/gemini:setup` checks the review model and the `/gemini:ask` default, so a rename shows up there first.
+The fallback rules:
+- If the first run fails for any other reason than sign-in or a hard timeout, the plugin runs the review once on Flash. If the failed model was Flash at any effort level, there is no second run, because every Flash level uses the same quota. The most likely cause is a used-up Argon quota. An unknown model or another `agy` error also falls back.
+- A sign-in error does not fall back, because Flash would fail the same way.
+- A hard timeout does not fall back, because it used the whole time budget.
+- The timeout is one budget for both runs. Flash gets only the time that is left. If less than 60 seconds are left, the plugin skips Flash and reports the Argon error.
+- A run that `agy` cut off at its own time limit is not an error. The plugin returns that partial result and does not fall back.
+- The first error is never hidden. The report and `fallbackReason` show it.
+
+Why two models: Argon was faster in a test in October 2026 (93 seconds against 219 seconds for the same three claims). But Argon has only a weekly limit, separate from Flash. One review of three claims used about 1.4% of it. Flash keeps reviews working when the Argon limit runs out.
+
+As of `agy` 1.3.6, `agy models` lists `gemini-4-argon-{low,medium,high}`, `gemini-3.8-flash-{high,medium,low}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}` and `gpt-oss-120b-medium`. `/gemini:setup` checks both review models and the `/gemini:ask` default, so a rename shows up there first.
 
 ### Why is a grounded review slow?
 
@@ -180,7 +194,7 @@ On May 19, 2026 at Google I/O, Google announced that Gemini CLI was being retire
 - **Transport.** Now spawns `agy` in print mode and reads its JSON output. The previous ACP JSON-RPC handshake (`initialize`, `session/new`, `session/set_mode`, `session/set_model`, `session/prompt`, `session/cancel`, `session/update`) is gone; `agy` does not expose ACP. Since agy 1.1.x, `--print` takes the prompt as its value. Bare `--print` with the prompt on stdin exits 2 with `flag needs an argument`, because stdin is ignored in print mode. So the plugin passes `--print=<prompt>`. It needs agy 1.3.x or later.
 - **Plan mode.** Removed. Headless `agy` cannot ask for permission, so it refuses file writes, commands and page fetches. Reviews stay read-only without a session mode.
 - **Tool-call observability.** Lost. `agy` does not report which tools ran. The `[grounding]` footer counts cited sources and lists any tools `agy` refused.
-- **Model selection.** Reviews pin the model, `gemini-3.8-flash-high`, passed as `--model=<id>`. Model IDs are the ones `agy models` prints. `/gemini:ask` takes any of them with `--model`.
+- **Model selection.** Reviews pin the model, passed as `--model=<id>`. See [Which model runs the review?](#which-model-runs-the-review). Model IDs are the ones `agy models` prints. `/gemini:ask` takes any of them with `--model`.
 - **Streaming progress.** Lost. `agy --print` returns the full response in one shot. The default timeout is 20 minutes.
 - **Auth.** Now uses Google OAuth via `agy`. `GEMINI_API_KEY` and `gemini auth login` are no longer used.
 - **Slash commands.** `/gemini:review` and `/gemini:setup` still work. `/gemini:ask` is new.

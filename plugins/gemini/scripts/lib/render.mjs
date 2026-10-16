@@ -15,10 +15,12 @@ function formatTokens(tokens) {
   return ` (tokens: ${input ?? "?"} in / ${output ?? "?"} out)`;
 }
 
-function formatHeader({ reviewLabel, target, tokens, agentVersion, model }) {
+function formatHeader({ reviewLabel, target, tokens, agentVersion, model, requestedModel, fellBack }) {
   const parts = [`${reviewLabel}: ${target}`];
   if (agentVersion) parts.push(`agy ${agentVersion}`);
-  if (model) parts.push(`model: ${model}`);
+  if (model) {
+    parts.push(fellBack && requestedModel ? `model: ${model} (fell back from ${requestedModel})` : `model: ${model}`);
+  }
   return parts.join("  |  ") + formatTokens(tokens);
 }
 
@@ -48,6 +50,8 @@ export function renderReviewResult({
   tokens,
   agentVersion,
   model = null,
+  requestedModel = null,
+  fallbackReason = null,
   deniedActions = [],
   timedOut = false
 }) {
@@ -61,9 +65,14 @@ export function renderReviewResult({
     target: label,
     tokens,
     agentVersion,
-    model
+    model,
+    requestedModel,
+    fellBack: fallbackReason != null
   });
   const lines = [header, "=".repeat(Math.min(header.length, 80)), ""];
+  if (fallbackReason != null) {
+    lines.push(`${requestedModel ?? "The review model"} failed, so ${model} ran the review instead. Reason: ${fallbackReason}`, "");
+  }
   const refused = describeDeniedActions(deniedActions);
   if (timedOut) {
     lines.push("agy hit its time limit and cut the review off. Results may be incomplete.", "");
@@ -185,7 +194,8 @@ function formatQuota(quota) {
   if (!quota) return "unknown (could not read `agy -p /usage`)";
   const part = (label, b) =>
     b ? `${label} ${b.remainingPercent}% left, resets ${b.resetTime}` : `${label} unknown`;
-  return `${part("weekly", quota.weekly)}; ${part("5-hour", quota.fiveHour)}`;
+  const flash = `${part("weekly", quota.weekly)}; ${part("5-hour", quota.fiveHour)}`;
+  return quota.argon ? `${flash}; ${part("Argon weekly", quota.argon.weekly)}` : flash;
 }
 
 export function renderAskResult({ response, deniedActions = [], timedOut = false }) {

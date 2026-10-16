@@ -24,7 +24,8 @@ import { truncateOnLineBoundary, byteLength } from "./lib/text-utils.mjs";
 import {
   ConfigError,
   AgyAuthError,
-  AgyConnectionError
+  AgyConnectionError,
+  AgyTimeoutError
 } from "./lib/errors.mjs";
 
 const MAX_REVIEW_INPUT_BYTES = 40_000;
@@ -32,6 +33,8 @@ const MAX_REVIEW_INPUT_BYTES = 40_000;
 const MAX_ASK_PROMPT_BYTES = 100_000;
 // The --dir file list also travels in that argv entry, so it gets its own cap.
 const MAX_DIR_LIST_BYTES = 20_000;
+// Below this, a fallback review run would be cut off before it could finish.
+const MIN_FALLBACK_MS = 60_000;
 // Headless agy cannot ask for permission, so one refused tool ends the run with
 // no answer at all. Shell commands, file writes and subagents are refused.
 // Page reads work only if the user allows read_url in their agy settings.
@@ -65,13 +68,20 @@ function listFolderFiles(dir) {
   return out.sort();
 }
 
-// Model policy for /gemini:review: one model, no fallback (see the README FAQ).
+// Model policy for /gemini:review: run the --model the caller chose, or Gemini 4
+// Argon by default. If that run fails for any reason other than sign-in or a
+// hard timeout (most often Argon's own weekly quota is used up), retry once on
+// Gemini 3.8 Flash, unless a Flash model was the one that failed. See the README FAQ.
 //
 // These are the slug IDs printed by `agy models`. The trailing effort tier
 // (`-high`) is part of the slug; agy also has a separate `--effort` flag we do
 // not use. Keep these in sync with `agy models`; `/gemini:setup` checks them.
-export const REVIEW_MODEL = "gemini-3.8-flash-high";
+export const PRIMARY_REVIEW_MODEL = "gemini-4-argon-high";
+export const FALLBACK_REVIEW_MODEL = "gemini-3.8-flash-high";
 export const DEFAULT_ASK_MODEL = "gemini-3.8-flash-medium";
+// Every effort level of the fallback model uses the same quota, so a failed run
+// on any of them is not retried on the fallback.
+const FALLBACK_FAMILY = FALLBACK_REVIEW_MODEL.replace(/-(?:low|medium|high)$/, "");
 
 let runReviewImpl = realRunReview;
 /** Test-only hook: swap the transport so unit tests don't spawn agy. */
@@ -163,9 +173,10 @@ export async function handleReview(argv, { stdin = null } = {}) {
   // single-quoted argument, so nothing is re-split here.
   const { options, positionals } = parseArgs(argv, {
     allowPositionals: true,
-    valueFlags: ["--timeout-ms"]
+    valueFlags: ["--timeout-ms", "--model"]
   });
   const promptTimeoutMs = promptTimeoutFrom(options);
+  const requestedModel = options.model || PRIMARY_REVIEW_MODEL;
 
   const rawInput = (stdin != null ? stdin : readAllStdinSync()) ?? "";
   if (!rawInput.trim()) {
@@ -197,16 +208,41 @@ export async function handleReview(argv, { stdin = null } = {}) {
 
   const agyVersion = binaryAvailableImpl("agy", ["--version"], { cwd: neutralCwd }).detail;
 
+  // The timeout is the budget for both runs: the fallback gets only what is left.
+  const budgetMs = promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
+  const deadline = Date.now() + budgetMs;
+  const runArgs = {
+    prompt,
+    cwd: neutralCwd,
+    agentVersion: agyVersion,
+    jsonSchema: schemaPath("review-output"),
+    promptTimeoutMs: budgetMs
+  };
+
   let result;
+  let usedModel = requestedModel;
+  let fallbackReason = null;
   try {
-    result = await runReviewImpl({
-      prompt,
-      cwd: neutralCwd,
-      agentVersion: agyVersion,
-      jsonSchema: schemaPath("review-output"),
-      promptTimeoutMs: promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS,
-      model: REVIEW_MODEL
-    });
+    try {
+      result = await runReviewImpl({ ...runArgs, model: requestedModel });
+    } catch (err) {
+      // Flash cannot fix a sign-in problem, and a hard timeout used the whole budget.
+      if (err instanceof AgyAuthError || err instanceof AgyTimeoutError) throw err;
+      if (requestedModel === FALLBACK_FAMILY || requestedModel.startsWith(`${FALLBACK_FAMILY}-`)) throw err;
+      const leftMs = deadline - Date.now();
+      if (leftMs < MIN_FALLBACK_MS) {
+        err.message += ` Skipped the fallback model '${FALLBACK_REVIEW_MODEL}': less than ${MIN_FALLBACK_MS / 1000} seconds of the time budget were left.`;
+        throw err;
+      }
+      usedModel = FALLBACK_REVIEW_MODEL;
+      fallbackReason = err.message;
+      try {
+        result = await runReviewImpl({ ...runArgs, model: FALLBACK_REVIEW_MODEL, promptTimeoutMs: leftMs });
+      } catch (fallbackErr) {
+        fallbackErr.message = `The requested model '${requestedModel}' failed: ${fallbackReason} The fallback model '${FALLBACK_REVIEW_MODEL}' also failed: ${fallbackErr.message}`;
+        throw fallbackErr;
+      }
+    }
   } finally {
     if (shouldCleanupCwd) removeNeutralCwd(neutralCwd);
   }
@@ -227,7 +263,10 @@ export async function handleReview(argv, { stdin = null } = {}) {
       JSON.stringify(
         {
           target,
-          model: REVIEW_MODEL,
+          model: usedModel,
+          requestedModel,
+          fellBack: fallbackReason != null,
+          fallbackReason,
           agentVersion: result.agentVersion,
           stopReason: result.stopReason,
           timedOut,
@@ -249,7 +288,9 @@ export async function handleReview(argv, { stdin = null } = {}) {
     target,
     tokens: result.tokens,
     agentVersion: result.agentVersion,
-    model: REVIEW_MODEL,
+    model: usedModel,
+    requestedModel,
+    fallbackReason,
     deniedActions,
     timedOut
   });
@@ -271,20 +312,31 @@ function listModels(cwd) {
   return { ids, error: null };
 }
 
-/** Gemini quota from `agy --print=/usage --output-format=json`. Free; null on any failure. */
+/**
+ * Gemini quota from `agy --print=/usage --output-format=json`. Free; null on any failure.
+ * agy reports "Gemini Models" (Flash) and "Gemini 4 Argon" as separate groups.
+ * Both names contain "Gemini", so each group is matched by name, never by order.
+ * Argon has a weekly limit only; `argon` is null when agy does not report it.
+ */
 function readQuota(cwd) {
   const r = runCommandImpl("agy", ["--print=/usage", "--output-format=json"], { cwd, timeoutMs: 30_000 });
   if (r.error || r.status !== 0) return null;
   try {
     const groups = JSON.parse(r.stdout).command?.data?.groups ?? [];
-    const gemini = groups.find((g) => /gemini/i.test(g?.name ?? ""));
+    const names = (g) => String(g?.name ?? "");
+    const gemini = groups.find((g) => /gemini/i.test(names(g)) && !/argon/i.test(names(g)));
+    const argon = groups.find((g) => /argon/i.test(names(g)));
     if (!gemini) return null;
-    const bucket = (window) => {
-      const b = (gemini.buckets ?? []).find((x) => x?.window === window);
+    const bucket = (group, window) => {
+      const b = (group?.buckets ?? []).find((x) => x?.window === window);
       if (!b || typeof b.remaining_fraction !== "number") return null;
       return { remainingPercent: Math.round(b.remaining_fraction * 100), resetTime: b.reset_time ?? null };
     };
-    return { weekly: bucket("weekly"), fiveHour: bucket("5h") };
+    return {
+      weekly: bucket(gemini, "weekly"),
+      fiveHour: bucket(gemini, "5h"),
+      argon: argon ? { weekly: bucket(argon, "weekly") } : null
+    };
   } catch {
     return null;
   }
@@ -295,22 +347,35 @@ function checkPinnedModels({ ids, error }) {
     return {
       status: "unknown",
       detail: `could not run \`agy models\`: ${error}`,
-      reviewOk: null,
+      primaryOk: null,
+      fallbackOk: null,
       askOk: null
     };
   }
-  const reviewOk = ids.has(REVIEW_MODEL);
+  const primaryOk = ids.has(PRIMARY_REVIEW_MODEL);
+  const fallbackOk = ids.has(FALLBACK_REVIEW_MODEL);
   const askOk = ids.has(DEFAULT_ASK_MODEL);
-  let status = reviewOk ? "ok" : "failed";
-  let detail = reviewOk
-    ? `review model '${REVIEW_MODEL}' is listed`
-    : `review model '${REVIEW_MODEL}' is not listed`;
+  let status;
+  let detail;
+  if (primaryOk && fallbackOk) {
+    status = "ok";
+    detail = `review model '${PRIMARY_REVIEW_MODEL}' and fallback '${FALLBACK_REVIEW_MODEL}' are listed`;
+  } else if (!primaryOk && !fallbackOk) {
+    status = "failed";
+    detail = `neither review model is listed (primary '${PRIMARY_REVIEW_MODEL}', fallback '${FALLBACK_REVIEW_MODEL}')`;
+  } else if (!primaryOk) {
+    status = "degraded";
+    detail = `review model '${PRIMARY_REVIEW_MODEL}' is not listed; reviews will fall back to '${FALLBACK_REVIEW_MODEL}'`;
+  } else {
+    status = "degraded";
+    detail = `fallback '${FALLBACK_REVIEW_MODEL}' is not listed; reviews still run on '${PRIMARY_REVIEW_MODEL}'`;
+  }
   // A missing ask default only affects /gemini:ask, so it degrades, never fails.
   if (!askOk) {
     if (status === "ok") status = "degraded";
     detail += `; /gemini:ask default '${DEFAULT_ASK_MODEL}' is not listed`;
   }
-  return { status, detail, reviewOk, askOk };
+  return { status, detail, primaryOk, fallbackOk, askOk };
 }
 
 export async function handleSetup(argv) {
@@ -364,7 +429,7 @@ export async function handleSetup(argv) {
       );
     } else if (modelCheck.status === "failed") {
       nextSteps.push(
-        "The review model is not listed. Run `agy models` and update REVIEW_MODEL in scripts/gemini-companion.mjs to a current ID."
+        "Neither review model is listed. Run `agy models` and update PRIMARY_REVIEW_MODEL and FALLBACK_REVIEW_MODEL in scripts/gemini-companion.mjs to current IDs."
       );
     } else if (modelCheck.status === "degraded") {
       nextSteps.push(
@@ -387,7 +452,8 @@ export async function handleSetup(argv) {
             promptOk,
             modelStatus: modelCheck.status,
             models: {
-              review: { model: REVIEW_MODEL, ok: modelCheck.reviewOk },
+              primary: { model: PRIMARY_REVIEW_MODEL, ok: modelCheck.primaryOk },
+              fallback: { model: FALLBACK_REVIEW_MODEL, ok: modelCheck.fallbackOk },
               ask: { model: DEFAULT_ASK_MODEL, ok: modelCheck.askOk }
             },
             quota,
@@ -559,7 +625,7 @@ function printUsage() {
     [
       "Usage:",
       "  node scripts/gemini-companion.mjs setup [--json]",
-      "  node scripts/gemini-companion.mjs review [--json] [--timeout-ms <n>] [focus text...]  (content to review read from stdin)",
+      "  node scripts/gemini-companion.mjs review [--model <id>] [--json] [--timeout-ms <n>] [focus text...]  (content to review read from stdin)",
       "  node scripts/gemini-companion.mjs ask [--model <id>] [--file <path>]... [--dir <folder>]... [--timeout-ms <n>] [--json] [prompt...]  (prompt from arguments and/or stdin)",
       ""
     ].join("\n")

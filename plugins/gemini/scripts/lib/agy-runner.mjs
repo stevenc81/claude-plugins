@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import process from "node:process";
-import { AgyAuthError, AgyConnectionError, AgyModelError, AgyTimeoutError } from "./errors.mjs";
+import { AgyAuthError, AgyConnectionError, AgyModelError, AgyQuotaError, AgyTimeoutError } from "./errors.mjs";
 
 export const DEFAULT_PROMPT_TIMEOUT_MS = 1_200_000;
 // agy's own --print-timeout returns partial output with exit 0. Our wall-clock
@@ -10,6 +10,38 @@ const SIGKILL_GRACE_MS = 1500;
 
 const PRINT_TIMEOUT_MARKER = /\[agy\] print timeout after/;
 const UNKNOWN_MODEL_MARKER = /is not recognized as a known model/;
+// A used-up quota. Matched before the auth word list, because a quota message
+// can say "sign in" (for example, to upgrade) and must not read as signed out.
+// The words must say the limit is used up, as in "quota exceeded" or "reached
+// your weekly limit". "cannot check quota" or "quota service could not be
+// reached" are other errors.
+const LIMIT = String.raw`(?:quota|rate limit|usage limit|weekly limit)`;
+const USED_UP = String.raw`(?:exceeded|exhausted|reached|used up)`;
+const QUOTA_MARKER = new RegExp(
+  [
+    "RESOURCE_EXHAUSTED",
+    // "quota exceeded", "rate limit has been reached"
+    String.raw`\b${LIMIT}\s+(?:has been\s+|was\s+|is\s+)?${USED_UP}\b`,
+    // "reached your Gemini 4 Argon quota", "exceeded the weekly limit", "ran out of quota"
+    String.raw`\b(?:${USED_UP}|ran out of)\s+(?:(?:your|the|its)\s+)?(?:[\w-]+\s+){0,4}${LIMIT}\b`
+  ].join("|"),
+  "i"
+);
+
+/**
+ * True when an `AGY_ERROR` line reports a used-up quota. A JSON line is judged
+ * only by its status and HTTP code, because its message can mention the quota
+ * for other reasons. A line that is not JSON is judged by its words.
+ */
+function isQuotaAgyError(line) {
+  let e;
+  try {
+    e = JSON.parse(line);
+  } catch {
+    return QUOTA_MARKER.test(line);
+  }
+  return e?.status === "RESOURCE_EXHAUSTED" || e?.code === 429;
+}
 
 function secondsForGoDuration(ms) {
   return `${Math.max(1, Math.ceil(ms / 1000))}s`;
@@ -41,6 +73,12 @@ function parseJsonResult(stdout) {
   return { response: stdout };
 }
 
+function quotaError(detail, model) {
+  return new AgyQuotaError(`agy has no quota left for "${model ?? "(default)"}": ${detail}`, {
+    suggestion: "Run `agy -p /usage` to see when the quota resets, or use another model."
+  });
+}
+
 function errorForExit({ code, signal, stdout, stderr, model }) {
   const agyError = findAgyErrorLine(stderr);
   if (agyError) {
@@ -49,6 +87,7 @@ function errorForExit({ code, signal, stdout, stderr, model }) {
         suggestion: "Run `agy -p hello` once interactively to complete OAuth, then retry."
       });
     }
+    if (isQuotaAgyError(agyError)) return quotaError(agyError, model);
     return new AgyConnectionError(`agy reported an error (exit ${code ?? signal}): ${agyError}`, {
       suggestion: "Rerun with GEMINI_PLUGIN_CC_DEBUG=1 for details."
     });
@@ -63,6 +102,7 @@ function errorForExit({ code, signal, stdout, stderr, model }) {
       suggestion: "Run `agy models` to see the model IDs you can use."
     });
   }
+  if (QUOTA_MARKER.test(detail)) return quotaError(detail, model);
   if (isAuthMessage(detail)) {
     return new AgyAuthError(`agy is not signed in: ${detail}`, {
       suggestion: "Run `agy -p hello` once interactively to complete OAuth, then retry."

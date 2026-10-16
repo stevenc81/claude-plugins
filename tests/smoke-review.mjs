@@ -55,7 +55,7 @@ async function main() {
   console.log(`completed in ${elapsed}s`);
   console.log(`  stopReason: ${payload.stopReason}`);
   console.log(`  input bytes: ${payload.target.inputBytes}`);
-  console.log(`  model: ${payload.model}`);
+  console.log(`  model: ${payload.model}${payload.fellBack ? ` (fell back from ${payload.requestedModel}: ${payload.fallbackReason})` : ""}`);
   console.log(`  timedOut: ${payload.timedOut}`);
   console.log(`  refused tools: ${JSON.stringify(payload.deniedActions ?? [])}`);
 

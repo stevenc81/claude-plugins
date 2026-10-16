@@ -7,6 +7,7 @@ import {
   AgyAuthError,
   AgyConnectionError,
   AgyModelError,
+  AgyQuotaError,
   AgyTimeoutError
 } from "../plugins/gemini/scripts/lib/errors.mjs";
 
@@ -253,6 +254,81 @@ test("unknown model is detected from the JSON error when stderr is empty", async
     () => runReview({ prompt: "x", model: "gemini-9-fake", spawnFn: () => proc }),
     AgyModelError
   );
+});
+
+test("AGY_ERROR with RESOURCE_EXHAUSTED throws AgyQuotaError naming the model", async () => {
+  const { proc } = makeFakeProc({
+    stderrChunks: ['AGY_ERROR: {"status":"RESOURCE_EXHAUSTED","code":429,"retryable":false,"message":"Individual quota reached"}\n'],
+    exitCode: 3
+  });
+  await assert.rejects(
+    () => runReview({ prompt: "x", model: "gemini-4-argon-high", spawnFn: () => proc }),
+    (err) =>
+      err instanceof AgyQuotaError &&
+      /gemini-4-argon-high/.test(err.message) &&
+      /agy -p \/usage/.test(err.suggestion)
+  );
+});
+
+test("a quota message that says 'sign in' is a quota error, not a sign-in error", async () => {
+  const text = "You have reached your Gemini 4 Argon quota. Sign in with an Ultra plan for more.";
+  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ status: "ERROR", error: text })], stderrChunks: [text], exitCode: 1 });
+  await assert.rejects(
+    () => runReview({ prompt: "x", model: "gemini-4-argon-high", spawnFn: () => proc }),
+    AgyQuotaError
+  );
+});
+
+test("AGY_ERROR UNAUTHENTICATED stays a sign-in error even if it mentions a quota", async () => {
+  const { proc } = makeFakeProc({
+    stderrChunks: ['AGY_ERROR: {"status":"UNAUTHENTICATED","code":401,"message":"token expired; quota unknown"}\n'],
+    exitCode: 3
+  });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => proc }), AgyAuthError);
+});
+
+test("AGY_ERROR with code 429 throws AgyQuotaError", async () => {
+  const { proc } = makeFakeProc({
+    stderrChunks: ['AGY_ERROR: {"status":"UNKNOWN","code":429,"message":"Too many requests"}\n'],
+    exitCode: 3
+  });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => proc }), AgyQuotaError);
+});
+
+for (const text of [
+  "Individual quota reached for Gemini 4 Argon.",
+  "You have exceeded your weekly limit.",
+  "Rate limit exceeded, retry later.",
+  "Your quota has been exhausted.",
+  "You ran out of quota for this week."
+]) {
+  test(`plain text that says the limit is used up is a quota error: ${text}`, async () => {
+    const { proc } = makeFakeProc({ stderrChunks: [text], exitCode: 1 });
+    await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => proc }), AgyQuotaError);
+  });
+}
+
+test("an error that only mentions quota is not a quota error: not signed in stays a sign-in error", async () => {
+  const { proc } = makeFakeProc({ stderrChunks: ["fatal: not signed in; cannot check quota"], exitCode: 1 });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => proc }), AgyAuthError);
+});
+
+for (const message of ["quota service unavailable", "quota service could not be reached"]) {
+  test(`AGY_ERROR UNAVAILABLE "${message}" is a connection error, not a quota error`, async () => {
+    const { proc } = makeFakeProc({
+      stderrChunks: [`AGY_ERROR: {"status":"UNAVAILABLE","code":503,"message":"${message}"}\n`],
+      exitCode: 3
+    });
+    await assert.rejects(
+      () => runReview({ prompt: "x", spawnFn: () => proc }),
+      (err) => err instanceof AgyConnectionError && !(err instanceof AgyQuotaError)
+    );
+  });
+}
+
+test("plain 'not signed in; quota service could not be reached' stays a sign-in error", async () => {
+  const { proc } = makeFakeProc({ stderrChunks: ["not signed in; quota service could not be reached"], exitCode: 1 });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => proc }), AgyAuthError);
 });
 
 test("ENOENT on spawn throws AgyConnectionError suggesting agy install", async () => {
