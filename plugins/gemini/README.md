@@ -1,4 +1,4 @@
-# gemini-plugin-cc
+# gemini
 
 Use the Antigravity CLI (`agy`) from inside Claude Code to fact-check with live web grounding. This plugin is for Claude Code users who want a second-opinion reviewer that goes to the live web (not just training data) to verify claims made in a conversation.
 
@@ -23,8 +23,8 @@ This plugin has one goal: to work reliably when Claude Code agents call it durin
 ## Install
 
 ```bash
-/plugin marketplace add stevenc81/gemini-plugin-cc
-/plugin install gemini@stevenc81-gemini
+/plugin marketplace add stevenc81/claude-plugins
+/plugin install gemini@stevenc81
 /reload-plugins
 ```
 
@@ -33,8 +33,8 @@ Then run `/gemini:setup` to check that everything works.
 The plugin has no fixed version number. Claude Code uses the git commit as the version, so every push to `main` is a new version. To get the latest one:
 
 ```bash
-claude plugin marketplace update stevenc81-gemini
-claude plugin update gemini@stevenc81-gemini
+claude plugin marketplace update stevenc81
+claude plugin update gemini@stevenc81
 ```
 
 Then run `/reload-plugins`, or start a new session.
@@ -203,6 +203,8 @@ Enterprise users with a Gemini Code Assist Standard or Enterprise license retain
 
 ## Development
 
+Run these commands from `plugins/gemini`:
+
 ```bash
 npm test
 ```
@@ -219,7 +221,7 @@ This feeds a small synthetic response with deliberately false claims and asserts
 
 ### Trying changes before you push
 
-Start Claude Code with the plugin loaded from your working tree. This applies to that session only:
+From the repository root, start Claude Code with the plugin loaded from your working tree. This applies to that session only:
 
 ```bash
 claude --plugin-dir ./plugins/gemini

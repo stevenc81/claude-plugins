@@ -6,13 +6,14 @@
   "description": "Use Antigravity CLI from Claude Code to fact-check with live web grounding.",
   "license": "Apache-2.0",
   "author": "stevenc81",
-  "homepage": "https://github.com/stevenc81/gemini-plugin-cc#readme",
+  "homepage": "https://github.com/stevenc81/claude-plugins/tree/main/plugins/gemini#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/stevenc81/gemini-plugin-cc.git"
+    "url": "git+https://github.com/stevenc81/claude-plugins.git",
+    "directory": "plugins/gemini"
   },
   "bugs": {
-    "url": "https://github.com/stevenc81/gemini-plugin-cc/issues"
+    "url": "https://github.com/stevenc81/claude-plugins/issues"
   },
   "engines": {
     "node": ">=18.18.0"

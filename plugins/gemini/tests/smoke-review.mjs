@@ -19,7 +19,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const COMPANION = path.resolve(HERE, "..", "plugins", "gemini", "scripts", "gemini-companion.mjs");
+const COMPANION = path.resolve(HERE, "..", "scripts", "gemini-companion.mjs");
 
 const SYNTHETIC_RESPONSE = [
   "Here's what I know:",

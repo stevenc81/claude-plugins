@@ -1,6 +1,7 @@
 {
   "name": "show",
-  "version": "0.1.0",
   "description": "Shows PNG images and plays mp4 videos inline in Claude Code, in Ghostty or kitty.",
-  "author": { "name": "stevenc81" }
+  "author": {
+    "name": "stevenc81"
+  }
 }

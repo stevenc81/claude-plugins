@@ -1,4 +1,4 @@
-# claude-show
+# show
 
 Claude Code can now show you pictures in the chat. Ask it how DNS works, and a diagram appears in the conversation, right where Claude explains it. Ask for a video, and a narrated explainer plays in the chat with sound. There is no browser tab and no HTML page.
 
@@ -21,23 +21,16 @@ It is one Claude Code plugin with two parts:
 
 ## Install
 
-Clone the repository, then start Claude Code with the plugin:
-
 ```
-git clone https://github.com/stevenc81/claude-show.git
-claude --plugin-dir ./claude-show
-```
-
-To load it in every session, add the folder to the `env` block of `~/.claude/settings.json`:
-
-```json
-"CLAUDE_CODE_PLUGIN_DIRS": "/path/to/claude-show"
+/plugin marketplace add stevenc81/claude-plugins
+/plugin install show@stevenc81
+/reload-plugins
 ```
 
-The repository is also a marketplace, so this works too:
+To try a change before you push it, start Claude Code from the repository root with the plugin loaded from your working tree:
 
 ```
-/plugin install show --marketplace stevenc81/claude-show
+claude --plugin-dir ./plugins/show
 ```
 
 The first image or video downloads Python packages through `uv`. The first video also downloads the Kokoro voice model, which takes about 5 minutes.
@@ -68,6 +61,8 @@ A 3-minute video takes about 5 seconds to prepare. Its frames use about 300 MB u
 - The picture size assumes a terminal cell twice as tall as it is wide, which fits Iosevka in Ghostty. If a circle shows as an oval, change `CELL_ASPECT` in `hooks/register.tsx`.
 
 ## Tests
+
+Run this from `plugins/show`:
 
 ```
 claude plugin test .

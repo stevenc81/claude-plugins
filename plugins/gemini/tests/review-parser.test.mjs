@@ -4,7 +4,7 @@ import {
   parseStructuredOutput,
   parseReviewOutput,
   internals
-} from "../plugins/gemini/scripts/lib/output-parser.mjs";
+} from "../scripts/lib/output-parser.mjs";
 
 const valid = {
   overall: "mixed",

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   isGroundingRedirectUrl,
   resolveSources
-} from "../plugins/gemini/scripts/lib/source-resolver.mjs";
+} from "../scripts/lib/source-resolver.mjs";
 
 const REDIRECT_A = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AAA";
 const REDIRECT_B = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/BBB";

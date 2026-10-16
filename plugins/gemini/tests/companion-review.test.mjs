@@ -6,7 +6,7 @@ import {
   setRunReviewForTest,
   PRIMARY_REVIEW_MODEL,
   FALLBACK_REVIEW_MODEL
-} from "../plugins/gemini/scripts/gemini-companion.mjs";
+} from "../scripts/gemini-companion.mjs";
 import {
   ConfigError,
   AgyAuthError,
@@ -14,7 +14,7 @@ import {
   AgyModelError,
   AgyQuotaError,
   AgyTimeoutError
-} from "../plugins/gemini/scripts/lib/errors.mjs";
+} from "../scripts/lib/errors.mjs";
 
 function captureStdout(fn) {
   const chunks = [];

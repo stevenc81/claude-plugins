@@ -1,0 +1,6 @@
+{
+  "name": "orchestrate",
+  "description": "Run a small team of Claude, Codex and Gemini agents, with a model pick for each job.",
+  "author": { "name": "stevenc81" },
+  "dependencies": ["gemini", "codex@openai-codex"]
+}

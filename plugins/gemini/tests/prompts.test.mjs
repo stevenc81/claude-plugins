@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { loadTemplate, loadSchemaText, renderPrompt, schemaPath } from "../plugins/gemini/scripts/lib/prompts.mjs";
-import { ConfigError } from "../plugins/gemini/scripts/lib/errors.mjs";
+import { loadTemplate, loadSchemaText, renderPrompt, schemaPath } from "../scripts/lib/prompts.mjs";
+import { ConfigError } from "../scripts/lib/errors.mjs";
 
 test("loadTemplate reads review.md", () => {
   const t = loadTemplate("review");
@@ -116,7 +116,7 @@ test("review template is well-formed: every closing tag has a matching opening t
   assert.deepEqual(open, [], `unclosed opening tag(s): ${open.map((n) => `<${n}>`).join(", ")}`);
 });
 
-const commandsDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "plugins", "gemini", "commands");
+const commandsDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "commands");
 
 test("the ask foreground flow caps the model run at 9 minutes, under the 10-minute Bash limit", () => {
   for (const name of ["ask.md"]) {

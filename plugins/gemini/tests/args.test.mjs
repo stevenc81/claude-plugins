@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseArgs, splitRawArgumentString, normalizeArgv } from "../plugins/gemini/scripts/lib/args.mjs";
-import { ConfigError } from "../plugins/gemini/scripts/lib/errors.mjs";
+import { parseArgs, splitRawArgumentString, normalizeArgv } from "../scripts/lib/args.mjs";
+import { ConfigError } from "../scripts/lib/errors.mjs";
 
 test("parses empty argv", () => {
   const { options, positionals } = parseArgs([]);
