@@ -1,9 +1,9 @@
 ---
-name: orchestrate
-description: Use when the user types /orchestrate, asks for an agent team or several agents, wants a thesis or claim fact-checked, or starts open-ended research or work that may run past a usage-limit window.
+name: conduct
+description: Use when the user types /orchestrate:conduct, asks for an agent team or several agents, wants a thesis or claim fact-checked, or starts open-ended research or work that may run past a usage-limit window.
 ---
 
-# Orchestrate
+# Conduct
 
 Standing rules for multi-agent work. The conductor is this session: it plans the work, starts the teammates and checks their results. A teammate is any agent the conductor starts, on any vendor: Claude, Codex or Gemini.
 

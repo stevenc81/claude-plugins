@@ -2,7 +2,7 @@
 
 A skill that turns one Claude Code session into the conductor of a small agent team. The team can mix Claude, Codex and Gemini. For each job, the skill picks a model and an effort level from a table of public benchmark results. It also says how to brief each agent, how to check a claim with three vendors, and what to do when a vendor hits a usage limit.
 
-The rules are in [`skills/orchestrate/SKILL.md`](skills/orchestrate/SKILL.md). The benchmark numbers and their sources are in [`skills/orchestrate/evidence.md`](skills/orchestrate/evidence.md). The model facts were checked on 2026-10-16.
+The rules are in [`skills/conduct/SKILL.md`](skills/conduct/SKILL.md). The benchmark numbers and their sources are in [`skills/conduct/evidence.md`](skills/conduct/evidence.md). The model facts were checked on 2026-10-16.
 
 ## What you need
 
@@ -21,7 +21,7 @@ The plugin depends on two other plugins: `gemini` from this marketplace, and `co
 /reload-plugins
 ```
 
-Then ask for an agent team in plain words, or type `/orchestrate:orchestrate`.
+Then ask for an agent team in plain words, or type `/orchestrate:conduct`.
 
 ## Usage limits
 
