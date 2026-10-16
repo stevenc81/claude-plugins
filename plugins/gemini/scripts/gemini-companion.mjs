@@ -42,6 +42,19 @@ const MIN_FALLBACK_MS = 60_000;
 export const ASK_TOOL_RULE =
   "Tools: use web search, and open web pages only if you need to. To read local files, use your file-reading tool with the paths given above. Never run shell commands, write files or start subagents: this run cannot ask for permission, and a refused tool ends it with no answer.";
 
+// True when dir is the home folder or holds it: some tail of the home path,
+// joined to dir, is the home folder itself (same device and inode).
+function holdsHome(dir) {
+  const home = fs.realpathSync(os.homedir());
+  const target = fs.statSync(home);
+  const parts = home.split(path.sep).filter(Boolean);
+  for (let i = 0; i <= parts.length; i++) {
+    const s = fs.statSync(path.join(dir, ...parts.slice(i)), { throwIfNoEntry: false });
+    if (s && s.dev === target.dev && s.ino === target.ino) return true;
+  }
+  return false;
+}
+
 // The deepest folder that contains every folder in dirs.
 function commonParent(dirs) {
   let parent = dirs[0];
@@ -557,13 +570,11 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   }
   // agy runs in the folders' common parent and can read anything inside it,
   // so refuse a parent that is the home folder or holds it, such as /Users or /.
-  // Real paths stop `..` and symlink tricks; macOS and Windows ignore case.
+  // The check compares inodes, so `..`, symlinks, letter case and macOS
+  // firmlinks such as /System/Volumes/Data/Users all count.
   const realDirs = dirs.map((d) => fs.realpathSync(d));
   const dir = realDirs.length > 0 ? commonParent(realDirs) : null;
-  const fold = (p) => (process.platform === "darwin" || process.platform === "win32" ? p.toLowerCase() : p);
-  const home = fold(fs.realpathSync(os.homedir()));
-  const holdsHome = (p) => home === fold(p) || home.startsWith(fold(p).replace(/[\\/]$/, "") + path.sep);
-  if (dir && (dir === path.parse(dir).root || holdsHome(dir))) {
+  if (dir && holdsHome(dir)) {
     throw new ConfigError(`The --dir folders only share ${dir}, which would let Gemini read everything in it.`, {
       suggestion: "Pass folders that sit inside one project folder."
     });

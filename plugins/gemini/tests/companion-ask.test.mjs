@@ -297,13 +297,16 @@ test("ask --dir refuses folders whose only common parent is the home folder", as
   }
 });
 
-test("ask --dir refuses a folder that holds the home folder, also through '..' or another letter case", async () => {
+test("ask --dir refuses a folder that holds the home folder, also through '..', another letter case or a macOS firmlink", async () => {
   setRunReviewForTest(async () => {
     throw new Error("should not be called");
   });
   const parent = path.dirname(os.homedir());
   const tries = [parent, path.join(os.homedir(), "..")];
   if (process.platform === "darwin") tries.push(os.homedir().toUpperCase());
+  for (const d of ["/System/Volumes/Data" + os.homedir(), "/System/Volumes/Data" + parent, "/System/Volumes/Data"]) {
+    if (fs.existsSync(d)) tries.push(d);
+  }
   for (const d of tries) {
     await assert.rejects(
       () => handleAsk(["--dir", d], { stdin: "hi" }),

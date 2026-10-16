@@ -15,7 +15,8 @@ Use only facts the user gave or you verified. If a fact is missing, ask or leave
 Run this setup first:
 ```
 S="<this skill's base directory>/scripts"   # Claude Code shows the base directory when the skill loads
-OUT="$(getconf DARWIN_USER_TEMP_DIR)claude-visual"; mkdir -p "$OUT"   # your private temp folder; macOS deletes files there after 3 days without use
+OUT="$(getconf DARWIN_USER_TEMP_DIR)claude-visual"   # your private temp folder; macOS deletes files there after 3 days without use
+case "$OUT" in /*) mkdir -p "$OUT" ;; *) echo "no private temp folder" >&2; exit 1 ;; esac
 ```
 
 ## Image (the default)
