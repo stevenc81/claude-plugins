@@ -1,0 +1,7 @@
+{
+  "name": "gemini",
+  "description": "Use Antigravity CLI from Claude Code to fact-check with live web grounding.",
+  "author": {
+    "name": "stevenc81"
+  }
+}
