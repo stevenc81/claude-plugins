@@ -1,0 +1,13 @@
+{
+  "name": "claude-show",
+  "owner": {
+    "name": "stevenc81"
+  },
+  "description": "Pictures and videos inline in Claude Code.",
+  "plugins": [
+    {
+      "name": "show",
+      "source": "./"
+    }
+  ]
+}
