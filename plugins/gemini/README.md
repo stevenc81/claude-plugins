@@ -179,7 +179,7 @@ The fallback rules:
 
 Why two models: Argon was faster in a test in October 2026 (93 seconds against 219 seconds for the same three claims). But Argon has only a weekly limit, separate from Flash. One review of three claims used about 1.4% of it. Flash keeps reviews working when the Argon limit runs out.
 
-As of `agy` 1.3.6, `agy models` lists `gemini-4-argon-{low,medium,high}`, `gemini-3.8-flash-{high,medium,low}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}` and `gpt-oss-120b-medium`. `/gemini:setup` checks both review models and the `/gemini:ask` default, so a rename shows up there first.
+As of `agy` 1.4.0, `agy models` lists `gemini-4-argon-{low,medium,high}`, `gemini-3.8-flash-{high,medium,low}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}` and `gpt-oss-120b-medium`. `/gemini:setup` checks both review models and the `/gemini:ask` default, so a rename shows up there first.
 
 ### Why is a grounded review slow?
 
