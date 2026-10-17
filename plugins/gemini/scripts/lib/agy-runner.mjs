@@ -124,7 +124,8 @@ function errorForExit({ code, signal, stdout, stderr, model }) {
  * is set, `text` is the serialized `structured_output`; agy's `response` can
  * carry stray keys in that mode, so it is only returned as `response` for
  * display. `--disable-slash-commands` keeps a prompt that starts with `/` from
- * being run as a local agy command.
+ * being run as a local agy command. Each `addDirs` entry becomes `--add-dir`,
+ * which lets agy's file tool read that folder.
  *
  * A run that hits agy's `--print-timeout` still exits 0 with partial output;
  * the stderr marker is the only reliable signal, surfaced as `timedOut`.
@@ -136,6 +137,7 @@ export function runReview({
   agentVersion = null,
   model = null,
   jsonSchema = null,
+  addDirs = [],
   spawnFn = nodeSpawn
 } = {}) {
   if (!prompt) {
@@ -144,6 +146,7 @@ export function runReview({
 
   const args = [];
   if (model) args.push(`--model=${model}`);
+  for (const dir of addDirs) args.push(`--add-dir=${dir}`);
   args.push("--output-format=json", "--disable-slash-commands");
   if (jsonSchema) args.push(`--json-schema=${jsonSchema}`);
   args.push(`--print=${prompt}`, `--print-timeout=${secondsForGoDuration(promptTimeoutMs)}`);

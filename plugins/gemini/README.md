@@ -106,19 +106,26 @@ Sends a prompt to a model and returns its answer exactly as the model wrote it.
 - Gemini 4 Argon (`gemini-4-argon-low`, `-medium`, `-high`) uses its own weekly quota. `/gemini:review` uses the same quota, so Argon asks leave fewer Argon reviews.
 - The prompt can be up to 100,000 bytes. Pass larger input with `--file`.
 - `--file <path>` can repeat. The plugin checks that each file exists and copies it into the empty temp folder that `agy` runs in. Gemini can read those copies and nothing else from the file's folder. The prompt lists the paths of the copies.
-- `--dir <folder>` gives Gemini read access to a folder, such as a source tree. It can repeat. `agy` runs in the folders' common parent, and the prompt lists the files in the given folders. The plugin refuses folders whose only common parent is `/` or your home folder. `agy` has no tool to list a folder, so the plugin builds that list. It skips names that start with `.` (such as `.git`), `node_modules` and symlinks. If the list is over 20,000 bytes, pass smaller subfolders. Use `--dir` or `--file`, not both.
+- `--dir <folder>` gives Gemini read access to a folder, such as a source tree. It can repeat, and the folders can be anywhere, also `/` or your home folder. The caller chooses them. The plugin passes each folder to `agy` as `--add-dir`, and the prompt lists the folders. Gemini's file tool can read only these folders. `ls` and `grep` can reach any path, so only the prompt keeps them inside these folders. `agy` has no tool to list or search a folder, so the prompt tells Gemini to use `ls` and `grep -rn`. That needs two rules in your `agy` settings (see below). Without them, `--dir` fails before the run and names the rules to add. `--dir` and `--file` can be used together.
 - `--json` returns `{model, response, tokens, deniedActions, timedOut}`.
 - It runs in the foreground by default. `--background` runs it as a background task.
 - `agy` runs in a fresh temp folder that is deleted afterwards. `agy`'s own saved conversations are left alone.
 - If `agy` refused a tool or the run timed out, a short note follows the answer.
-- The plugin tells Gemini to use web search, web pages and the local files it was given. It also tells Gemini never to run shell commands, write files or start subagents. When `agy` runs without a terminal, it cannot ask you for permission. So one refused tool ends the run, and the answer is empty.
+- The plugin tells Gemini to use web search, web pages and the local files it was given. With `--dir`, it may also run `ls` and `grep`, one plain command at a time. It tells Gemini never to run other shell commands, write files or start subagents. When `agy` runs without a terminal, it cannot ask you for permission. So one refused tool ends the run, and the answer is empty.
+- For `--dir`, add these two rules to `~/.gemini/antigravity-cli/settings.json`:
+
+  ```json
+  "permissions": { "allow": ["command(ls)", "command(grep)"] }
+  ```
+
+  The rules apply to every `agy` run, also when you use `agy` yourself. Tested on `agy` 1.4.0: `agy` still refuses chains (`&&`, `;`), pipes, redirects and `$(...)` with these rules, so `ls` and `grep` cannot start other programs or write files. The forms `command(ls *)` and `command(ls:*)` do not match. `rg` and `find` are left out, because `rg --pre` and `find -exec` run other programs.
 - By default, `agy` also refuses to open web pages. Research jobs, such as reading Reddit threads, need page reads. To allow them, add this to `~/.gemini/antigravity-cli/settings.json`:
 
   ```json
   "permissions": { "allow": ["read_url(*)"] }
   ```
 
-  Gemini can then open any page it finds. It still cannot run commands or read your other files. A research run can take 8 minutes or more, so use `--background` for it.
+  Put all rules in one `allow` list. Gemini can then open any page it finds. It still cannot write files. Its file tool cannot read outside the given files and folders. A research run can take 8 minutes or more, so use `--background` for it.
 
 ### `/gemini:setup`
 
@@ -148,7 +155,7 @@ Environment variables:
 
 For each call, the plugin:
 
-1. Runs `agy` with every flag in `--flag=value` form: `--model`, `--output-format=json`, `--disable-slash-commands`, then `--print=<prompt>` and `--print-timeout`. Reviews add `--json-schema`. The prompt is the value of `--print`, because `agy` ignores stdin in print mode
+1. Runs `agy` with every flag in `--flag=value` form: `--model`, one `--add-dir` for each `/gemini:ask --dir` folder, `--output-format=json`, `--disable-slash-commands`, then `--print=<prompt>` and `--print-timeout`. Reviews add `--json-schema`. The prompt is the value of `--print`, because `agy` ignores stdin in print mode
 2. Reads the JSON result: the answer (`structured_output` when a schema was used, otherwise `response`), token usage, and refused tools
 3. Checks `agy`'s stderr for its timeout notice, and on a nonzero exit for `AGY_ERROR`, unknown model, used-up quota, and sign-in errors, in that order. The quota check comes before the sign-in check, because a quota message can contain words such as "sign in"
 4. For reviews, validates the result against the schema, resolves redirect links, and renders the report

@@ -110,6 +110,27 @@ test("passes --model and --json-schema before --print", async () => {
   assert.equal(result.model, "gemini-3.8-flash-high");
 });
 
+test("passes each addDirs entry as --add-dir after --model", async () => {
+  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "ok" })] });
+  const { captured, spawnFn } = captureArgs(proc);
+  await runReview({
+    prompt: "x",
+    model: "gemini-3.8-flash-low",
+    addDirs: ["/repo/a", "/other b"],
+    promptTimeoutMs: 60_000,
+    spawnFn
+  });
+  assert.deepEqual(captured.args, [
+    "--model=gemini-3.8-flash-low",
+    "--add-dir=/repo/a",
+    "--add-dir=/other b",
+    "--output-format=json",
+    "--disable-slash-commands",
+    "--print=x",
+    "--print-timeout=60s"
+  ]);
+});
+
 test("rounds prompt-timeout up to the nearest second for agy's Go duration", async () => {
   const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "k" })] });
   const { captured, spawnFn } = captureArgs(proc);

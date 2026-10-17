@@ -33,7 +33,7 @@ Use the table as the default, not as a fixed rule.
 3. For an independent check, use the second choice. It is always from a different vendor than the first choice.
 4. Split the work by strength, not evenly.
 5. If no row fits, use the nearest row.
-6. If a row says "no clear winner", pick by tools. Claude teammates have the full Claude Code tools. Codex works in a folder and runs code. Gemini reads only the web and the files you pass to it.
+6. If a row says "no clear winner", pick by tools. Claude teammates have the full Claude Code tools. Codex reads any file and runs code. Gemini reads the web and the files and folders you pass to it, and it does not run code.
 7. If a job fails, follow "Usage limits".
 
 | Job | First choice | Second choice | Why | Confidence |
@@ -87,7 +87,7 @@ The table sets the effort for each job. Higher effort adds wait time fast and st
 A teammate starts with no context. Start every teammate prompt with this brief:
 
 1. The role and the goal, in one line.
-2. The inputs, and what is out of scope.
+2. The inputs, and what is out of scope. Name the files and folders that the job needs, as absolute paths. Give only those.
 3. The output format, and what "done" means.
 4. Report to the conductor. The conductor decides whether teammates also send reports to each other. Put temporary files in `<temp>`.
 5. Read-only or write access. Use `subagent_type: Explore` only for search jobs: it reads parts of files, not whole files.
@@ -98,6 +98,7 @@ A teammate starts with no context. Start every teammate prompt with this brief:
 - Codex, one job: `codex exec --skip-git-repo-check -C <project> -s <sandbox> -m <model> -c model_reasoning_effort=<effort> - < <temp>/prompt-<job>.md > <temp>/<job>.md`. The efforts are low, medium, high, xhigh, max and ultra.
   - Write the prompt to `<temp>/prompt-<job>.md` first. Never put the prompt in the command line: quotes, `$(...)` or backticks in it would run in the shell.
   - Use `-s read-only` for reviews, research and checks. Use `-s workspace-write` only for a job that must change files. Then Codex can write inside the `-C` folder and in `<temp>`.
+  - In both sandboxes, Codex can read any file on the disk. `-C` sets only its working folder.
   - Without `--skip-git-repo-check`, Codex refuses to start in a folder that is not a git repo.
   - For web search, put `--search` before `exec`: `codex --search exec ...`.
   - Pass images with `-i <file>`.
@@ -107,7 +108,7 @@ A teammate starts with no context. Start every teammate prompt with this brief:
 - Gemini fact check: `/gemini:review --model gemini-4-argon-high [focus]`. Always pass `--model`: an older plugin version in a session can default to Flash.
 - Gemini, other jobs: `/gemini:ask --model <id> '<prompt>'`.
   - Always pass `--model`. Without it, the plugin uses `gemini-3.8-flash-medium`.
-  - Pass files, images, audio or video with `--file <path>`. Pass a source folder with `--dir <folder>`, which can repeat.
+  - Pass files, images, audio or video with `--file <path>`. Pass a source folder with `--dir <folder>`, which can repeat. The folders can be anywhere. Gemini's file tool reads only inside them. Gemini lists and searches with `ls` and `grep`, which can reach any path, so the plugin's prompt tells it to stay inside.
   - Keep the prompt under 100 KB. Put larger inputs in a file.
   - Use `--background` for research or large `--dir` jobs. A run in the foreground stops after 9 minutes.
   - The plugin README has the full rules, including how to let Gemini open web pages.

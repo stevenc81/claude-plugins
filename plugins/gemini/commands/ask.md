@@ -17,7 +17,7 @@ Core constraint:
 Input handling:
 - Split the raw arguments into flags and the prompt. Flags are `--model <id>`, `--file <path>` (may repeat), `--dir <folder>` (may repeat), `--json` and `--background`. Everything else is the prompt.
 - `--model` takes any model ID from `agy models`. The default is `gemini-3.8-flash-medium`.
-- `--dir` gives Gemini read access to a folder, such as a source tree. It may repeat for several folders in one project. Use it instead of `--file` when there are many files. Do not combine `--dir` and `--file`.
+- `--dir` gives Gemini read access to a folder, such as a source tree. Gemini can list it with `ls` and search it with `grep`. It may repeat, and the folders can be anywhere. Use it instead of `--file` when there are many files. `--dir` and `--file` can be used together.
 - If there is no prompt, stop and tell the user: "Nothing to ask. Add a prompt after /gemini:ask."
 
 Building the command:

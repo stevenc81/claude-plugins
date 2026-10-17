@@ -6,8 +6,10 @@ import path from "node:path";
 import {
   handleAsk,
   setRunReviewForTest,
+  setAgySettingsPathForTest,
   DEFAULT_ASK_MODEL,
-  ASK_TOOL_RULE
+  ASK_TOOL_RULE,
+  ASK_DIR_TOOL_RULE
 } from "../scripts/gemini-companion.mjs";
 import { ConfigError, AgyModelError } from "../scripts/lib/errors.mjs";
 
@@ -40,7 +42,20 @@ function reply(fields = {}) {
 }
 
 beforeEach(() => setRunReviewForTest(null));
-afterEach(() => setRunReviewForTest(null));
+afterEach(() => {
+  setRunReviewForTest(null);
+  setAgySettingsPathForTest(null);
+});
+
+// Writes an agy settings.json with the given allow rules and points the
+// companion at it. Returns the temp folder, which the caller removes.
+function useAgySettings(allow) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-settings-"));
+  const file = path.join(dir, "settings.json");
+  fs.writeFileSync(file, JSON.stringify({ permissions: { allow } }));
+  setAgySettingsPathForTest(file);
+  return dir;
+}
 
 test("ask uses the default model, runs from a fresh temp folder and removes it", async () => {
   let seen;
@@ -200,37 +215,102 @@ test("ask rejects a prompt over 100,000 bytes and points at --file", async () =>
   await captureStdout(() => handleAsk([], { stdin: "x".repeat(100_000) }));
 });
 
-test("ask --dir runs agy inside the folder, lists its files and leaves the folder in place", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-dir-"));
+test("ask --dir adds each folder with --add-dir, lists the folders and runs from a fresh temp folder", async () => {
+  const settings = useAgySettings(["read_url(*)", "command(ls)", "command(grep)"]);
+  const a = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-dir-a-"));
+  const b = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-dir-b-"));
   try {
-    fs.mkdirSync(path.join(dir, "core"));
-    fs.mkdirSync(path.join(dir, ".git"));
-    fs.mkdirSync(path.join(dir, "node_modules"));
-    fs.writeFileSync(path.join(dir, "core", "dupes.cpp"), "x");
-    fs.writeFileSync(path.join(dir, "main.cpp"), "x");
-    fs.writeFileSync(path.join(dir, ".git", "HEAD"), "x");
-    fs.writeFileSync(path.join(dir, "node_modules", "pkg.js"), "x");
-    fs.symlinkSync("/etc/hosts", path.join(dir, "hosts-link"));
+    fs.writeFileSync(path.join(a, "main.cpp"), "x");
     let seen;
     setRunReviewForTest(async (args) => {
       seen = args;
       return reply();
     });
-    await captureStdout(() => handleAsk(["--dir", dir], { stdin: "Where is isDuplicate?" }));
-    assert.equal(seen.cwd, fs.realpathSync(dir));
+    await captureStdout(() => handleAsk(["--dir", a, "--dir", b, "--dir", a], { stdin: "Where is isDuplicate?" }));
+    const real = [fs.realpathSync(a), fs.realpathSync(b)];
+    assert.deepEqual(seen.addDirs, real, "each folder once, as a real path");
+    assert.match(path.basename(seen.cwd), /^gemini-ask-cwd-/);
     assert.ok(
-      seen.prompt.includes("Files in the current folder (relative paths):\n- core/dupes.cpp\n- main.cpp\n\n"),
-      "lists only regular files outside dot folders and node_modules"
+      seen.prompt.startsWith(
+        `Where is isDuplicate?\n\nFolders for this request (absolute paths):\n- ${real[0]}\n- ${real[1]}\n\n`
+      )
     );
-    assert.ok(!/HEAD|pkg\.js|hosts-link/.test(seen.prompt), "skips .git, node_modules and symlinks");
-    assert.ok(seen.prompt.endsWith(ASK_TOOL_RULE));
-    assert.equal(fs.existsSync(path.join(dir, "main.cpp")), true, "the folder is not removed");
+    assert.ok(seen.prompt.endsWith(ASK_DIR_TOOL_RULE));
+    assert.equal(fs.existsSync(seen.cwd), false, "the temp folder is removed");
+    assert.equal(fs.existsSync(path.join(a, "main.cpp")), true, "the --dir folder is not removed");
   } finally {
+    for (const d of [settings, a, b]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
+test("ask --dir accepts / and the home folder, and folders that share only /", async () => {
+  const settings = useAgySettings(["command(ls)", "command(grep)"]);
+  try {
+    const seen = [];
+    setRunReviewForTest(async (args) => {
+      seen.push(args.addDirs);
+      return reply();
+    });
+    await captureStdout(() => handleAsk(["--dir", "/"], { stdin: "hi" }));
+    await captureStdout(() => handleAsk(["--dir", os.homedir()], { stdin: "hi" }));
+    await captureStdout(() => handleAsk(["--dir", os.homedir(), "--dir", os.tmpdir()], { stdin: "hi" }));
+    assert.deepEqual(seen, [
+      ["/"],
+      [fs.realpathSync(os.homedir())],
+      [fs.realpathSync(os.homedir()), fs.realpathSync(os.tmpdir())]
+    ]);
+  } finally {
+    fs.rmSync(settings, { recursive: true, force: true });
+  }
+});
+
+test("ask --dir and --file work together", async () => {
+  const settings = useAgySettings(["command(ls)", "command(grep)"]);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-dir-"));
+  try {
+    fs.writeFileSync(path.join(dir, "a.txt"), "A");
+    let seen;
+    let copied;
+    setRunReviewForTest(async (args) => {
+      seen = args;
+      copied = fs.readdirSync(args.cwd);
+      return reply();
+    });
+    await captureStdout(() => handleAsk(["--dir", dir, "--file", path.join(dir, "a.txt")], { stdin: "hi" }));
+    assert.deepEqual(copied, ["1-a.txt"]);
+    assert.deepEqual(seen.addDirs, [fs.realpathSync(dir)]);
+    assert.ok(seen.prompt.includes("Files for this request (absolute paths):"));
+    assert.ok(seen.prompt.includes("Folders for this request (absolute paths):"));
+  } finally {
+    fs.rmSync(settings, { recursive: true, force: true });
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("ask --dir rejects a missing folder, --file together with --dir, and a file list that is too long", async () => {
+test("ask --dir fails before the run when agy does not allow ls and grep", async () => {
+  setRunReviewForTest(async () => {
+    throw new Error("should not be called");
+  });
+  const onlyLs = useAgySettings(["read_url(*)", "command(ls)"]);
+  try {
+    await assert.rejects(
+      () => handleAsk(["--dir", os.tmpdir()], { stdin: "hi" }),
+      (err) =>
+        err instanceof ConfigError &&
+        /needs agy to allow ls and grep/.test(err.message) &&
+        /"command\(ls\)" and "command\(grep\)"/.test(err.suggestion)
+    );
+    setAgySettingsPathForTest(path.join(onlyLs, "missing.json"));
+    await assert.rejects(() => handleAsk(["--dir", os.tmpdir()], { stdin: "hi" }), ConfigError);
+    fs.writeFileSync(path.join(onlyLs, "broken.json"), "{ not json");
+    setAgySettingsPathForTest(path.join(onlyLs, "broken.json"));
+    await assert.rejects(() => handleAsk(["--dir", os.tmpdir()], { stdin: "hi" }), ConfigError);
+  } finally {
+    fs.rmSync(onlyLs, { recursive: true, force: true });
+  }
+});
+
+test("ask --dir rejects a missing folder without calling agy", async () => {
   setRunReviewForTest(async () => {
     throw new Error("should not be called");
   });
@@ -238,80 +318,28 @@ test("ask --dir rejects a missing folder, --file together with --dir, and a file
     () => handleAsk(["--dir", "/definitely/not/here"], { stdin: "hi" }),
     (err) => err instanceof ConfigError && /Folder not found/.test(err.message)
   );
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-dir-"));
-  try {
-    fs.writeFileSync(path.join(dir, "a.txt"), "A");
-    await assert.rejects(
-      () => handleAsk(["--dir", dir, "--file", path.join(dir, "a.txt")], { stdin: "hi" }),
-      (err) => err instanceof ConfigError && /not both/.test(err.message)
-    );
-    for (let i = 0; i < 1500; i++) fs.writeFileSync(path.join(dir, `file-with-a-long-name-${i}.txt`), "");
-    await assert.rejects(
-      () => handleAsk(["--dir", dir], { stdin: "hi" }),
-      (err) => err instanceof ConfigError && /20000 bytes/.test(err.message) && /subfolders/.test(err.suggestion)
-    );
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
 });
 
-test("ask --dir can repeat: agy runs in the common parent and the list covers only the given folders", async () => {
+test("ask rejects a full prompt over the argv limit, also when only the folder list makes it too long", async () => {
+  const settings = useAgySettings(["command(ls)", "command(grep)"]);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-dir-"));
   try {
-    for (const d of ["core/libs/imgqsort", "core/libs/haar", "core/ui"]) fs.mkdirSync(path.join(root, d), { recursive: true });
-    fs.writeFileSync(path.join(root, "core/libs/imgqsort", "blur.cpp"), "x");
-    fs.writeFileSync(path.join(root, "core/libs/haar", "haar.cpp"), "x");
-    fs.writeFileSync(path.join(root, "core/ui", "button.cpp"), "x");
-    let seen;
-    setRunReviewForTest(async (args) => {
-      seen = args;
-      return reply();
+    const dirs = Array.from({ length: 300 }, (_, i) => path.join(root, `${i}-${"x".repeat(240)}`));
+    dirs.forEach((d) => fs.mkdirSync(d));
+    let cwd;
+    setRunReviewForTest(async () => {
+      throw new Error("should not be called");
     });
-    await captureStdout(() =>
-      handleAsk(["--dir", path.join(root, "core/libs/imgqsort"), "--dir", path.join(root, "core/libs/haar")], {
-        stdin: "Compare."
-      })
+    await assert.rejects(
+      () => handleAsk(dirs.flatMap((d) => ["--dir", d]), { stdin: "x".repeat(60_000) }),
+      (err) => err instanceof ConfigError && /folder lists/.test(err.message) && /fewer/.test(err.suggestion)
     );
-    assert.equal(seen.cwd, fs.realpathSync(path.join(root, "core/libs")));
-    assert.ok(seen.prompt.includes("- imgqsort/blur.cpp\n- haar/haar.cpp"));
-    assert.ok(!seen.prompt.includes("button.cpp"));
+    // The temp folder is still removed after the error.
+    const left = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith("gemini-ask-cwd-"));
+    cwd = left.find((n) => fs.statSync(path.join(os.tmpdir(), n)).mtimeMs > Date.now() - 5000);
+    assert.equal(cwd, undefined);
   } finally {
+    fs.rmSync(settings, { recursive: true, force: true });
     fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("ask --dir refuses folders whose only common parent is the home folder", async () => {
-  setRunReviewForTest(async () => {
-    throw new Error("should not be called");
-  });
-  const a = fs.mkdtempSync(path.join(os.homedir(), ".gemini-ask-test-a-"));
-  const b = fs.mkdtempSync(path.join(os.homedir(), ".gemini-ask-test-b-"));
-  try {
-    await assert.rejects(
-      () => handleAsk(["--dir", a, "--dir", b], { stdin: "hi" }),
-      (err) => err instanceof ConfigError && /read everything/.test(err.message)
-    );
-  } finally {
-    fs.rmSync(a, { recursive: true, force: true });
-    fs.rmSync(b, { recursive: true, force: true });
-  }
-});
-
-test("ask --dir refuses a folder that holds the home folder, also through '..', another letter case or a macOS firmlink", async () => {
-  setRunReviewForTest(async () => {
-    throw new Error("should not be called");
-  });
-  const parent = path.dirname(os.homedir());
-  const tries = [parent, path.join(os.homedir(), "..")];
-  if (process.platform === "darwin") tries.push(os.homedir().toUpperCase());
-  for (const d of ["/System/Volumes/Data" + os.homedir(), "/System/Volumes/Data" + parent, "/System/Volumes/Data"]) {
-    if (fs.existsSync(d)) tries.push(d);
-  }
-  for (const d of tries) {
-    await assert.rejects(
-      () => handleAsk(["--dir", d], { stdin: "hi" }),
-      (err) => err instanceof ConfigError && /read everything/.test(err.message),
-      d
-    );
   }
 });
