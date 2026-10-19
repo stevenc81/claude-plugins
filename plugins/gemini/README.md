@@ -17,6 +17,7 @@ This plugin has one goal: to work reliably when Claude Code agents call it durin
 ## Requirements
 
 - **Antigravity CLI** 1.3.x or later (`agy --version` must work). The plugin relies on `--output-format=json`, `--json-schema` and `--disable-slash-commands`. See https://antigravity.google
+- **Antigravity CLI 1.4.2 or later for `/gemini:ask --dir`.** That is the oldest version on which the command hook was tested (see [`/gemini:ask`](#geminiask)). An older `agy` could ignore the hook without a warning, so `--dir` fails before the run and tells you to run `agy update`.
 - **Sign-in.** Run `agy -p hello` once interactively. The first call opens a browser for OAuth and writes the session under `~/.gemini/antigravity-cli/`
 - **Node.js 18.18 or later**
 
@@ -118,7 +119,7 @@ Sends a prompt to a model and returns its answer exactly as the model wrote it.
   "permissions": { "allow": ["command(ls)", "command(grep)"] }
   ```
 
-  The rules apply to every `agy` run, also when you use `agy` yourself. Tested on `agy` 1.4.0: `agy` still refuses chains (`&&`, `;`), pipes, redirects and `$(...)` with these rules, so `ls` and `grep` cannot start other programs or write files. The forms `command(ls *)` and `command(ls:*)` do not match. `rg` and `find` are left out, because `rg --pre` and `find -exec` run other programs.
+  The rules apply to every `agy` run, also when you use `agy` yourself. Tested on `agy` 1.4.2: with these rules, `agy` still refuses chains (`&&`, `;`), pipes and `$(...)`. But it runs a redirect such as `grep x dir > file` when the file is inside the workspace: the temp folder or a `--dir` folder. So each run also loads a hook from its temp folder, `.agents/hooks.json`. The hook runs `scripts/command-gate.mjs` before each command. It allows one plain `ls` or `grep` command and denies anything with `;`, `&`, `|`, `<`, `>`, `$`, a backtick, a backslash, brackets or a new line. If the hook fails, `agy` denies the command. A hook denial does not end the run. The plugin adds each denied command to `deniedActions` as `{"action": "command", "display_name": "<the command>"}`, so it shows in the refused-tools note. The hook cannot replace the two rules: `agy` refuses `ls` and `grep` without them, even when the hook allows them. The forms `command(ls *)` and `command(ls:*)` do not match. `rg` and `find` are left out, because `rg --pre` and `find -exec` run other programs.
 - By default, `agy` also refuses to open web pages. Research jobs, such as reading Reddit threads, need page reads. To allow them, add this to `~/.gemini/antigravity-cli/settings.json`:
 
   ```json
@@ -155,7 +156,7 @@ Environment variables:
 
 For each call, the plugin:
 
-1. Runs `agy` with every flag in `--flag=value` form: `--model`, one `--add-dir` for each `/gemini:ask --dir` folder, `--output-format=json`, `--disable-slash-commands`, then `--print=<prompt>` and `--print-timeout`. Reviews add `--json-schema`. The prompt is the value of `--print`, because `agy` ignores stdin in print mode
+1. Runs `agy` with every flag in `--flag=value` form: `--model`, one `--add-dir` for each `/gemini:ask --dir` folder, `--output-format=json`, `--disable-slash-commands`, then `--print=<prompt>` and `--print-timeout`. Reviews add `--json-schema`. The prompt is the value of `--print`, because `agy` ignores stdin in print mode. `agy` runs in an empty temp folder that holds the command hook (see [`/gemini:ask`](#geminiask))
 2. Reads the JSON result: the answer (`structured_output` when a schema was used, otherwise `response`), token usage, and refused tools
 3. Checks `agy`'s stderr for its timeout notice, and on a nonzero exit for `AGY_ERROR`, unknown model, used-up quota, and sign-in errors, in that order. The quota check comes before the sign-in check, because a quota message can contain words such as "sign in"
 4. For reviews, validates the result against the schema, resolves redirect links, and renders the report
@@ -186,7 +187,7 @@ The fallback rules:
 
 Why two models: Argon was faster in a test in October 2026 (93 seconds against 219 seconds for the same three claims). But Argon has only a weekly limit, separate from Flash. One review of three claims used about 1.4% of it. Flash keeps reviews working when the Argon limit runs out.
 
-As of `agy` 1.4.0, `agy models` lists `gemini-4-argon-{low,medium,high}`, `gemini-3.8-flash-{high,medium,low}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}` and `gpt-oss-120b-medium`. `/gemini:setup` checks both review models and the `/gemini:ask` default, so a rename shows up there first.
+As of `agy` 1.4.2, `agy models` lists `gemini-4-argon-{low,medium,high}`, `gemini-3.8-flash-{high,medium,low}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}` and `gpt-oss-120b-medium`. `/gemini:setup` checks both review models and the `/gemini:ask` default, so a rename shows up there first.
 
 ### Why is a grounded review slow?
 

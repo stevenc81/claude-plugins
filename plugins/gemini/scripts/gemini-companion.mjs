@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { parseArgs, normalizeArgv } from "./lib/args.mjs";
 import {
   binaryAvailable as realBinaryAvailable,
@@ -43,10 +44,23 @@ const NO_OTHER_TOOLS =
   "write files or start subagents: this run cannot ask for permission, and a refused tool ends it with no answer.";
 export const ASK_TOOL_RULE = `Tools: use web search, and open web pages only if you need to. To read local files, use your file-reading tool with the paths given above. Never run shell commands, ${NO_OTHER_TOOLS}`;
 // agy has no tool to list or search a folder. With --dir, the user's agy
-// settings must allow `ls` and `grep`; agy refuses pipes, chains and redirects
-// even then.
+// settings must allow `ls` and `grep`. agy then still refuses pipes and chains,
+// but runs a redirect into the workspace, so a hook denies anything but one
+// plain ls or grep (see makeNeutralCwd).
 export const ASK_DIR_TOOL_RULE = `Tools: use web search, and open web pages only if you need to. To read local files, use your file-reading tool. Stay inside the folders and files given above. To list a folder, run \`ls <folder>\`. To search, run \`grep -rn <text> <folder>\`. Run each as one plain command, with no pipes, \`&&\`, \`;\`, redirects or \`$(...)\`. Never run other shell commands, ${NO_OTHER_TOOLS}`;
 export const LIST_SEARCH_RULES = ["command(ls)", "command(grep)"];
+// The oldest agy on which the command hook was tested.
+export const MIN_DIR_AGY_VERSION = [1, 4, 2];
+
+// True when `version` holds x.y.z at or above `min`. No version counts as no.
+function isAtLeast(version, min) {
+  const m = String(version).match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return false;
+  for (let i = 0; i < 3; i++) {
+    if (Number(m[i + 1]) !== min[i]) return Number(m[i + 1]) > min[i];
+  }
+  return true;
+}
 
 let agySettingsPath = path.join(os.homedir(), ".gemini", "antigravity-cli", "settings.json");
 /** Test-only hook: point the settings check at another file. */
@@ -130,8 +144,47 @@ function readAllStdinSync() {
   }
 }
 
+const COMMAND_GATE = fileURLToPath(new URL("./command-gate.mjs", import.meta.url));
+const shellQuote = (s) => `'${s.replaceAll("'", `'\\''`)}'`;
+
+const hookDenialLog = (cwd) => path.join(cwd, ".agents", "denied.jsonl");
+
+// agy loads .agents/hooks.json from its working folder. The hook lets agy run
+// only one plain ls or grep command (see command-gate.mjs).
 function makeNeutralCwd(prefix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const command = [process.execPath, COMMAND_GATE, hookDenialLog(dir)].map(shellQuote).join(" ");
+  const hook = { type: "command", command, timeout: 10 };
+  fs.mkdirSync(path.join(dir, ".agents"));
+  fs.writeFileSync(
+    path.join(dir, ".agents", "hooks.json"),
+    JSON.stringify({ "gemini-plugin-command-gate": { PreToolUse: [{ matcher: "run_command", hooks: [hook] }] } })
+  );
+  return dir;
+}
+
+// Runs agy and adds the commands that the hook denied in this run to
+// deniedActions, so callers see them next to agy's own refusals. A cwd that
+// makeNeutralCwd did not make has no hook (gated is false).
+async function runAgy(args, gated = true) {
+  if (!gated) return runReviewImpl(args);
+  const log = hookDenialLog(args.cwd);
+  fs.rmSync(log, { force: true });
+  const result = await runReviewImpl(args);
+  let lines = [];
+  try {
+    lines = fs.readFileSync(log, "utf8").split("\n").filter(Boolean);
+  } catch {
+    return result;
+  }
+  const denials = lines.flatMap((line) => {
+    try {
+      return [JSON.parse(line)];
+    } catch {
+      return [];
+    }
+  });
+  return { ...result, deniedActions: [...(result.deniedActions ?? []), ...denials] };
 }
 
 function removeNeutralCwd(dir) {
@@ -221,7 +274,7 @@ export async function handleReview(argv, { stdin = null } = {}) {
   let fallbackReason = null;
   try {
     try {
-      result = await runReviewImpl({ ...runArgs, model: requestedModel });
+      result = await runAgy({ ...runArgs, model: requestedModel }, shouldCleanupCwd);
     } catch (err) {
       // Flash cannot fix a sign-in problem, and a hard timeout used the whole budget.
       if (err instanceof AgyAuthError || err instanceof AgyTimeoutError) throw err;
@@ -234,7 +287,7 @@ export async function handleReview(argv, { stdin = null } = {}) {
       usedModel = FALLBACK_REVIEW_MODEL;
       fallbackReason = err.message;
       try {
-        result = await runReviewImpl({ ...runArgs, model: FALLBACK_REVIEW_MODEL, promptTimeoutMs: leftMs });
+        result = await runAgy({ ...runArgs, model: FALLBACK_REVIEW_MODEL, promptTimeoutMs: leftMs }, shouldCleanupCwd);
       } catch (fallbackErr) {
         fallbackErr.message = `The requested model '${requestedModel}' failed: ${fallbackReason} The fallback model '${FALLBACK_REVIEW_MODEL}' also failed: ${fallbackErr.message}`;
         throw fallbackErr;
@@ -554,6 +607,16 @@ export async function handleAsk(argv, { stdin = null } = {}) {
       suggestion: `Add ${LIST_SEARCH_RULES.map((r) => `"${r}"`).join(" and ")} to "permissions": { "allow": [...] } in that file, then rerun.`
     });
   }
+  // With --dir, the command hook is the only thing that stops a redirect into
+  // the user's folders. An agy that ignores the hook would not say so.
+  if (dirs.length > 0) {
+    const version = binaryAvailableImpl("agy", ["--version"]).detail;
+    if (!isAtLeast(version, MIN_DIR_AGY_VERSION)) {
+      throw new ConfigError(`--dir needs agy ${MIN_DIR_AGY_VERSION.join(".")} or later, and agy reports "${version}".`, {
+        suggestion: "Run `agy update`, then rerun."
+      });
+    }
+  }
   // The caller chooses the folders, so any folder is allowed, also / or the
   // home folder. agy's file tool reads only these folders.
   const realDirs = [...new Set(dirs.map((d) => fs.realpathSync(d)))];
@@ -588,7 +651,7 @@ export async function handleAsk(argv, { stdin = null } = {}) {
         { suggestion: "Pass fewer --file or --dir paths, or a shorter prompt." }
       );
     }
-    result = await runReviewImpl({
+    result = await runAgy({
       prompt,
       cwd,
       model,

@@ -7,11 +7,13 @@ import {
   handleAsk,
   setRunReviewForTest,
   setAgySettingsPathForTest,
+  setBinaryAvailableForTest,
   DEFAULT_ASK_MODEL,
   ASK_TOOL_RULE,
   ASK_DIR_TOOL_RULE
 } from "../scripts/gemini-companion.mjs";
 import { ConfigError, AgyModelError } from "../scripts/lib/errors.mjs";
+import { execFileSync } from "node:child_process";
 
 function captureStdout(fn) {
   const chunks = [];
@@ -41,10 +43,15 @@ function reply(fields = {}) {
   };
 }
 
-beforeEach(() => setRunReviewForTest(null));
+const useAgyVersion = (detail) => setBinaryAvailableForTest(() => ({ available: true, detail }));
+beforeEach(() => {
+  setRunReviewForTest(null);
+  useAgyVersion("1.4.2");
+});
 afterEach(() => {
   setRunReviewForTest(null);
   setAgySettingsPathForTest(null);
+  setBinaryAvailableForTest(null);
 });
 
 // Writes an agy settings.json with the given allow rules and points the
@@ -62,6 +69,11 @@ test("ask uses the default model, runs from a fresh temp folder and removes it",
   setRunReviewForTest(async (args) => {
     seen = args;
     assert.ok(fs.existsSync(args.cwd), "temp folder exists while agy runs");
+    const hooks = JSON.parse(fs.readFileSync(path.join(args.cwd, ".agents", "hooks.json"), "utf8"));
+    const [group] = hooks["gemini-plugin-command-gate"].PreToolUse;
+    assert.equal(group.matcher, "run_command");
+    assert.equal(group.hooks[0].command.split("' '").length, 3, "node, the gate and the log");
+    assert.match(group.hooks[0].command, /\/scripts\/command-gate\.mjs' '.+\/\.agents\/denied\.jsonl'$/);
     return reply();
   });
   const out = await captureStdout(() => handleAsk([], { stdin: "Reply with PONG." }));
@@ -129,7 +141,7 @@ test("ask --file copies each file into agy's temp folder and lists the copies in
     let copied;
     setRunReviewForTest(async (args) => {
       seen = args;
-      copied = fs.readdirSync(args.cwd).sort().map((n) => [n, fs.readFileSync(path.join(args.cwd, n), "utf8")]);
+      copied = fs.readdirSync(args.cwd).filter((n) => n !== ".agents").sort().map((n) => [n, fs.readFileSync(path.join(args.cwd, n), "utf8")]);
       return reply();
     });
     await captureStdout(() =>
@@ -189,6 +201,23 @@ test("ask --json returns model, response, tokens, deniedActions and timedOut", a
     deniedActions: [],
     timedOut: false
   });
+});
+
+test("ask adds the commands that the hook denied to deniedActions", async () => {
+  setRunReviewForTest(async ({ cwd }) => {
+    // Run the hook the way agy does, from the hooks.json in the temp folder.
+    const hooks = JSON.parse(fs.readFileSync(path.join(cwd, ".agents", "hooks.json"), "utf8"));
+    const { command } = hooks["gemini-plugin-command-gate"].PreToolUse[0].hooks[0];
+    for (const CommandLine of ["ls /src", "grep -rn x /src > /src/out.txt"]) {
+      execFileSync("sh", ["-c", command], { input: JSON.stringify({ toolCall: { name: "run_command", args: { CommandLine } } }) });
+    }
+    return reply({ deniedActions: [{ action: "read_url", display_name: "ReadUrl" }] });
+  });
+  const out = await captureStdout(() => handleAsk(["--json"], { stdin: "Search /src." }));
+  assert.deepEqual(JSON.parse(out).deniedActions, [
+    { action: "read_url", display_name: "ReadUrl" },
+    { action: "command", display_name: "grep -rn x /src > /src/out.txt" }
+  ]);
 });
 
 test("ask --timeout-ms sets the prompt timeout", async () => {
@@ -273,7 +302,7 @@ test("ask --dir and --file work together", async () => {
     let copied;
     setRunReviewForTest(async (args) => {
       seen = args;
-      copied = fs.readdirSync(args.cwd);
+      copied = fs.readdirSync(args.cwd).filter((n) => n !== ".agents");
       return reply();
     });
     await captureStdout(() => handleAsk(["--dir", dir, "--file", path.join(dir, "a.txt")], { stdin: "hi" }));
@@ -307,6 +336,30 @@ test("ask --dir fails before the run when agy does not allow ls and grep", async
     await assert.rejects(() => handleAsk(["--dir", os.tmpdir()], { stdin: "hi" }), ConfigError);
   } finally {
     fs.rmSync(onlyLs, { recursive: true, force: true });
+  }
+});
+
+test("ask --dir fails before the run on an agy older than 1.4.2 or with no version", async () => {
+  setRunReviewForTest(async () => {
+    throw new Error("should not be called");
+  });
+  const settings = useAgySettings(["command(ls)", "command(grep)"]);
+  try {
+    for (const detail of ["1.4.1", "1.3.6", "agy not found on PATH"]) {
+      useAgyVersion(detail);
+      await assert.rejects(
+        () => handleAsk(["--dir", os.tmpdir()], { stdin: "hi" }),
+        (err) => err instanceof ConfigError && /needs agy 1\.4\.2 or later/.test(err.message) && /agy update/.test(err.suggestion),
+        detail
+      );
+    }
+    for (const detail of ["1.4.2", "1.5.0", "2.0.0"]) {
+      useAgyVersion(detail);
+      setRunReviewForTest(async () => reply());
+      await captureStdout(() => handleAsk(["--dir", os.tmpdir()], { stdin: "hi" }));
+    }
+  } finally {
+    fs.rmSync(settings, { recursive: true, force: true });
   }
 });
 
