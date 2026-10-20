@@ -1,6 +1,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
+import fs from "node:fs";
 import process from "node:process";
-import { AgyAuthError, AgyConnectionError, AgyModelError, AgyQuotaError, AgyTimeoutError } from "./errors.mjs";
+import { AgyAuthError, AgyConnectionError, AgyModelError, AgyQuotaError, AgyTimeoutError, ConfigError } from "./errors.mjs";
 
 export const DEFAULT_PROMPT_TIMEOUT_MS = 1_200_000;
 // agy's own --print-timeout returns partial output with exit 0. Our wall-clock
@@ -76,6 +77,26 @@ function isValidResult(result) {
   );
 }
 
+// True when the hook has logged a denial. The log is new for each run, and
+// agy does not list hook denials in the result.
+function hookDenied(denialLog) {
+  try {
+    return Boolean(denialLog) && fs.statSync(denialLog).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+// A part was taken in: a plain success with some reply and no refused tool.
+function isPartAccepted(result) {
+  return (
+    isValidResult(result) &&
+    result.status === "SUCCESS" &&
+    result.response.trim() !== "" &&
+    !(Array.isArray(result.denied_actions) && result.denied_actions.length > 0)
+  );
+}
+
 function quotaError(detail, model) {
   return new AgyQuotaError(`agy has no quota left for "${model ?? "(default)"}": ${detail}`, {
     suggestion: "Run `agy -p /usage` to see when the quota resets, or use another model."
@@ -134,6 +155,16 @@ function errorForExit({ code, signal, result, plain, stderr, model }) {
  * which lets agy's file tool read that folder. `conversationId` continues an
  * earlier conversation with `--conversation`.
  *
+ * `parts` are messages sent before the prompt, each in its own turn of the
+ * same session, for a prompt too long for one message. Each part is sent
+ * after the `result` of the one before it, and must come back as a plain
+ * success, with nothing new in the hook's `denialLog`; otherwise nothing more
+ * is sent and the run fails. stdin closes
+ * after the prompt. agy's usage in the last `result` covers the whole session.
+ * When the session grows past agy's compaction threshold, agy replaces the
+ * earlier turns with a summary (a `checkpoint` step). Gemini then no longer
+ * has the whole input, so a session with parts that compacts fails too.
+ *
  * A run that hits agy's `--print-timeout` still exits 0 with partial output;
  * the stderr marker is the only reliable signal, surfaced as `timedOut`.
  */
@@ -146,6 +177,8 @@ export function runReview({
   jsonSchema = null,
   addDirs = [],
   conversationId = null,
+  parts = [],
+  denialLog = null,
   spawnFn = nodeSpawn
 } = {}) {
   if (!prompt) {
@@ -168,6 +201,18 @@ export function runReview({
     let plain = ""; // stdout lines that are not JSON, for error messages
     let partLine = ""; // the end of stdout that has no newline yet
     let stderr = "";
+    const messages = [...parts, prompt];
+    let sent = 0;
+    let answered = 0; // result events so far, one per message
+    let compacted = false;
+
+    // stdin closes after the last message, which ends the session after its turn.
+    const sendNext = () => {
+      const line = JSON.stringify({ event: "user", message: { role: "user", content: messages[sent] } }) + "\n";
+      sent += 1;
+      if (sent === messages.length) proc.stdin?.end?.(line);
+      else proc.stdin?.write?.(line);
+    };
 
     const readLine = (line) => {
       if (!line.trim()) return;
@@ -178,7 +223,14 @@ export function runReview({
         plain += `${line}\n`;
         return;
       }
-      if (event?.event === "result") result = event.result;
+      if (event?.event === "step_update" && event.step_update?.step_type === "checkpoint") compacted = true;
+      if (event?.event !== "result") return;
+      result = event.result;
+      answered += 1;
+      if (answered < messages.length) {
+        if (isPartAccepted(result) && !hookDenied(denialLog) && !(compacted && parts.length > 0)) sendNext();
+        else proc.stdin?.end?.();
+      }
     };
 
     proc.stdout?.setEncoding?.("utf8");
@@ -260,6 +312,31 @@ export function runReview({
           reject(errorForExit({ code, signal, result, plain, stderr, model }));
           return;
         }
+        if (compacted && parts.length > 0) {
+          reject(
+            new ConfigError(
+              `agy compacted the conversation by message ${answered} of ${messages.length}, so Gemini no longer had the whole input.`,
+              { suggestion: "Send less text: split the job into several asks, or attach the input with --file for lookups." }
+            )
+          );
+          return;
+        }
+        // A part was not taken in, or agy stopped before the last message.
+        if (answered > 0 && answered < messages.length) {
+          if (result?.status === "ERROR") {
+            reject(errorForExit({ code, signal, result, plain, stderr, model }));
+            return;
+          }
+          const denied = Array.isArray(result?.denied_actions) ? result.denied_actions.length : 0;
+          const hook = hookDenied(denialLog) ? ", and the hook denied a tool call" : "";
+          const detail = `status ${result?.status}, response ${JSON.stringify(result?.response ?? null).slice(0, 100)}, ${denied} refused tools${hook}${stderr.trim() ? `, stderr: ${stderr.trim()}` : ""}`;
+          reject(
+            new AgyConnectionError(`agy stopped after message ${answered} of ${messages.length} (${detail}).`, {
+              suggestion: "Rerun the ask. Each part must come back as a plain reply before the next one is sent."
+            })
+          );
+          return;
+        }
         if (!isValidResult(result)) {
           const got = result === undefined ? "" : ` (got ${JSON.stringify(result).slice(0, 200)})`;
           const detail = stderr.trim() || plain.trim() || "no output";
@@ -299,6 +376,6 @@ export function runReview({
     // pipe, and the write fails with EPIPE. The exit code and stderr explain
     // that failure, so the write error itself is ignored.
     proc.stdin?.on?.("error", () => {});
-    proc.stdin?.end?.(JSON.stringify({ event: "user", message: { role: "user", content: prompt } }) + "\n");
+    sendNext();
   });
 }

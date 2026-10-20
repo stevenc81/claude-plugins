@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough, Readable, Writable } from "node:stream";
 import { runReview } from "../scripts/lib/agy-runner.mjs";
 import {
@@ -8,7 +11,8 @@ import {
   AgyConnectionError,
   AgyModelError,
   AgyQuotaError,
-  AgyTimeoutError
+  AgyTimeoutError,
+  ConfigError
 } from "../scripts/lib/errors.mjs";
 
 // A fake agy child. It emits "exit" and then "close", as Node does once
@@ -485,4 +489,159 @@ test("agentVersion is passed through", async () => {
 
 test("missing prompt throws synchronously", () => {
   assert.throws(() => runReview({ prompt: "", spawnFn: () => null }));
+});
+
+// A fake agy session: it answers each stdin message with the next reply as a
+// result event, and closes once stdin is closed. `whenReplying` records how
+// many messages it had when it answered each one. A message number in
+// `compactAt` gets a checkpoint step before its result, as agy writes when it
+// compacts the conversation.
+function makeSessionProc(replies, { exitCode = 0, compactAt = null, onMessage = null } = {}) {
+  const proc = new EventEmitter();
+  const received = [];
+  const whenReplying = [];
+  let pending = "";
+  proc.stdout = new PassThrough();
+  proc.stderr = Readable.from([]);
+  proc.stdin = new Writable({
+    write(chunk, _enc, cb) {
+      pending += chunk.toString("utf8");
+      let n;
+      while ((n = pending.indexOf("\n")) >= 0) {
+        received.push(JSON.parse(pending.slice(0, n)).message.content);
+        pending = pending.slice(n + 1);
+        onMessage?.(received.length);
+        const reply = replies[received.length - 1];
+        if (reply !== undefined) {
+          setTimeout(() => {
+            whenReplying.push(received.length);
+            if (received.length === compactAt) {
+              // Shape from agy 1.4.3 (build test b10, a manual /compact).
+              const step = { conversation_id: "c-1", step_index: 9, state: "DONE", step_type: "checkpoint", duration_seconds: 4.8 };
+              proc.stdout.write(`${JSON.stringify({ event: "step_update", step_update: step })}\n`);
+            }
+            proc.stdout.write(`${JSON.stringify({ event: "result", result: reply })}\n`);
+          }, 2);
+        }
+      }
+      cb();
+    },
+    final(cb) {
+      setTimeout(() => proc.stdout.end(), 10);
+      cb();
+    }
+  });
+  proc.stdout.on("end", () => setTimeout(() => proc.emit("close", exitCode, null), 1));
+  proc.kill = () => true;
+  return { proc, received, whenReplying };
+}
+
+const okReply = (fields = {}) => ({ conversation_id: "c-1", status: "SUCCESS", response: "OK\n", ...fields });
+
+test("parts go one per turn, each after the result of the one before, then the prompt, in one process", async () => {
+  const session = makeSessionProc([
+    okReply(),
+    okReply({ response: "Ok." }),
+    okReply({ response: "ALPHA, BRAVO\n", usage: { input_tokens: 900, output_tokens: 5, total_tokens: 905 } })
+  ]);
+  let spawns = 0;
+  const result = await runReview({
+    prompt: "question",
+    parts: ["part one", "part two"],
+    spawnFn: () => {
+      spawns += 1;
+      return session.proc;
+    }
+  });
+  assert.equal(spawns, 1);
+  assert.deepEqual(session.received, ["part one", "part two", "question"]);
+  assert.deepEqual(session.whenReplying, [1, 2, 3], "the next message waits for the result before it");
+  assert.equal(result.text, "ALPHA, BRAVO\n");
+  assert.equal(result.tokens.input_tokens, 900, "usage comes from the last result");
+});
+
+test("a part that does not come back as a plain success stops the run: nothing more is sent", async () => {
+  for (const [name, bad] of [
+    ["empty response", okReply({ response: "" })],
+    ["refused tool", okReply({ response: "OK", denied_actions: [{ action: "read_file" }] })],
+    ["no conversation ID", { status: "SUCCESS", response: "OK" }]
+  ]) {
+    const session = makeSessionProc([okReply(), bad, okReply(), okReply()]);
+    await assert.rejects(
+      () => runReview({ prompt: "q", parts: ["p1", "p2", "p3"], spawnFn: () => session.proc }),
+      (err) => err instanceof AgyConnectionError && /stopped after message 2 of 4/.test(err.message),
+      name
+    );
+    assert.deepEqual(session.received, ["p1", "p2"], name);
+  }
+});
+
+test("an error result in the middle of the parts keeps its quota classification", async () => {
+  const session = makeSessionProc([
+    okReply(),
+    { conversation_id: "c-1", status: "ERROR", response: "", error: "Individual quota reached for Gemini 4 Argon." }
+  ]);
+  await assert.rejects(
+    () => runReview({ prompt: "q", parts: ["p1", "p2", "p3"], model: "gemini-4-argon-low", spawnFn: () => session.proc }),
+    AgyQuotaError
+  );
+  assert.deepEqual(session.received, ["p1", "p2"]);
+});
+
+test("agy that closes after the parts without answering the prompt is an error", async () => {
+  const session = makeSessionProc([okReply(), okReply()]);
+  await assert.rejects(
+    () => runReview({ prompt: "q", parts: ["p1", "p2"], spawnFn: () => session.proc }),
+    /stopped after message 2 of 3/
+  );
+});
+
+test("with a conversation ID, the parts and the prompt go into that conversation", async () => {
+  const session = makeSessionProc([okReply({ conversation_id: "c-7" }), okReply({ conversation_id: "c-7", response: "done" })]);
+  const { captured, spawnFn } = captureArgs(session.proc);
+  const result = await runReview({ prompt: "q", parts: ["p1"], conversationId: "c-7", spawnFn });
+  assert.ok(captured.args.includes("--conversation=c-7"));
+  assert.deepEqual(session.received, ["p1", "q"]);
+  assert.equal(result.conversationId, "c-7");
+  assert.equal(result.text, "done");
+});
+
+test("a session with parts that agy compacts fails, and nothing more is sent", async () => {
+  const session = makeSessionProc([okReply(), okReply(), okReply(), okReply()], { compactAt: 2 });
+  await assert.rejects(
+    () => runReview({ prompt: "q", parts: ["p1", "p2", "p3"], spawnFn: () => session.proc }),
+    (err) => err instanceof ConfigError && /compacted the conversation by message 2 of 4/.test(err.message)
+  );
+  assert.deepEqual(session.received, ["p1", "p2"]);
+});
+
+test("a single message whose turn compacts still returns its answer", async () => {
+  const session = makeSessionProc([okReply({ response: "answer after a long research turn" })], { compactAt: 1 });
+  const result = await runReview({ prompt: "q", spawnFn: () => session.proc });
+  assert.equal(result.text, "answer after a long research turn");
+});
+
+test("a part whose turn the hook denied a tool in stops the run, though agy reports success", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-runner-denials-"));
+  const denialLog = path.join(dir, "denied.jsonl");
+  try {
+    // The hook writes the log during the turn; agy's result still says SUCCESS
+    // with no denied_actions (build test b5).
+    const session = makeSessionProc([okReply(), okReply(), okReply()], {
+      onMessage: (n) => n === 1 && fs.appendFileSync(denialLog, '{"action":"invoke_subagent"}\n')
+    });
+    await assert.rejects(
+      () => runReview({ prompt: "q", parts: ["p1", "p2"], denialLog, spawnFn: () => session.proc }),
+      (err) => err instanceof AgyConnectionError && /stopped after message 1 of 3/.test(err.message) && /hook denied/.test(err.message)
+    );
+    assert.deepEqual(session.received, ["p1"]);
+
+    // With an empty log, the same parts go through.
+    fs.rmSync(denialLog);
+    const clean = makeSessionProc([okReply(), okReply(), okReply({ response: "done" })]);
+    const result = await runReview({ prompt: "q", parts: ["p1", "p2"], denialLog, spawnFn: () => clean.proc });
+    assert.equal(result.text, "done");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

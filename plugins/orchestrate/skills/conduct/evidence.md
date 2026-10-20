@@ -68,6 +68,7 @@ Arena caveats:
 | Context window | Claude 1M. Argon and 3.8 Flash 1M. In Codex: 6.1 Sol 500k, Astra and Luna 272k. | Vendor docs, ~/.codex/models_cache.json |
 | AA-LCR (about 100k tokens) | Opus 85%, Fable 85%, Flash medium 84%, 6.1 Sol max 83%, Luna 83%, Argon 80% (no clear winner) | artificialanalysis.ai |
 | GraphWalks 256k–1M (vendor) | Argon 84.2, Astra 71.8, Opus 66.8 | deepmind.google/models/gemini |
+| Context through `agy` 1.4.3 | `agy` cuts one message at 192,000 bytes. Sent in parts in one session, a document stays whole up to about 165k tokens. At about 169k (Argon) and 164k to 205k (Flash), `agy` compacts the conversation into a summary. | Live tests with gemini-4-argon-low and gemini-3.8-flash-low, 2026-10-20 |
 | Arena Longer Query | Argon 1543±14, Opus 1523±11 (tie) | arena.ai |
 | Video (vendor, LVBench) | Argon 91.7, Flash 87.8, Astra 87.5, Opus 83.7 | deepmind.google |
 | Media input in this setup | `codex exec` takes images only (`-i`). The Claude Code Read tool takes images and PDFs. Only Gemini takes audio and video. | `codex exec --help`, Read tool description, 2026-10-16 |

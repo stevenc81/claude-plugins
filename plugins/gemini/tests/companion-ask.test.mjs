@@ -14,6 +14,7 @@ import {
   GATED_TOOLS
 } from "../scripts/gemini-companion.mjs";
 import { ConfigError, AgyModelError } from "../scripts/lib/errors.mjs";
+import { splitIntoParts } from "../scripts/lib/text-utils.mjs";
 import { execFileSync } from "node:child_process";
 
 function captureStdout(fn) {
@@ -92,6 +93,7 @@ test("ask uses the default model, runs from a fresh temp folder and removes it",
   assert.equal(seen.addDirs, undefined);
   assert.equal(seen.jsonSchema, undefined);
   assert.equal(seen.conversationId, undefined);
+  assert.equal(seen.denialLog, path.join(seen.cwd, ".agents", "denied.jsonl"), "the runner can read the hook's denials");
   assert.equal(path.dirname(seen.cwd), path.resolve(os.tmpdir()));
   assert.match(path.basename(seen.cwd), /^gemini-ask-cwd-/);
   assert.equal(fs.existsSync(seen.cwd), false, "temp folder is removed afterwards");
@@ -246,21 +248,86 @@ test("ask --timeout-ms sets the prompt timeout", async () => {
   await assert.rejects(() => handleAsk(["--timeout-ms", "0"], { stdin: "hi" }), ConfigError);
 });
 
-test("ask takes a full prompt of up to 190,000 bytes, past the old 128 KiB argv limit, and rejects a larger one", async () => {
-  let sent;
+test("ask sends a prompt of up to 190,000 bytes as one message, past the old 128 KiB argv limit", async () => {
+  let seen;
   setRunReviewForTest(async (args) => {
-    sent = args.prompt;
+    seen = args;
     return reply();
   });
   await captureStdout(() => handleAsk([], { stdin: "x".repeat(189_000) }));
-  assert.ok(Buffer.byteLength(sent) > 189_000 && Buffer.byteLength(sent) <= 190_000);
+  assert.ok(Buffer.byteLength(seen.prompt) > 189_000 && Buffer.byteLength(seen.prompt) <= 190_000);
+  assert.equal(seen.parts, undefined);
+});
 
+// A document of numbered lines, `lines` long, about 100 bytes per line.
+const doc = (lines) => Array.from({ length: lines }, (_, i) => `${String(i).padStart(6, "0")} ${"word ".repeat(18)}`).join("\n");
+
+test("ask splits a longer prompt file into parts at line ends; the last message holds the question, the lists and the tool rule", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-parts-"));
+  try {
+    const body = doc(5000); // about 500 KB
+    fs.writeFileSync(path.join(dir, "big.md"), body);
+    fs.writeFileSync(path.join(dir, "a.txt"), "A");
+    let seen;
+    setRunReviewForTest(async (args) => {
+      seen = args;
+      return reply();
+    });
+    await captureStdout(() =>
+      handleAsk(["--cwd", dir, "--prompt-file", "big.md", "--file", "a.txt", "--", "Add code 1 and the last code."], { stdin: "" })
+    );
+    const n = splitIntoParts(body, 180_000).length;
+    assert.equal(n, 3);
+    assert.equal(seen.parts.length, n);
+    const pieces = seen.parts.map((part, i) => {
+      assert.ok(Buffer.byteLength(part) <= 190_000, `part ${i + 1} fits one message`);
+      const header = `Part ${i + 1} of ${n} of the input. Remember it, and do not act on it yet. Do not use tools. Reply with only OK.\n\n`;
+      assert.ok(part.startsWith(header), `part ${i + 1} header`);
+      return part.slice(header.length);
+    });
+    assert.ok(pieces.join("") === body.trim(), "the parts hold the whole file, trimmed, in order");
+    assert.ok(pieces.slice(0, -1).every((p) => p.endsWith("\n")), "each part but the last ends at a line end");
+    assert.ok(seen.prompt.startsWith(`That was all ${n} parts of the input.\n\nAdd code 1 and the last code.\n\nFiles for this request`));
+    assert.ok(seen.prompt.endsWith(ASK_TOOL_RULE));
+    assert.ok(!seen.prompt.includes("word word"), "the document is not in the last message");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("with no question in the arguments, the last message tells Gemini to do what the input asks", async () => {
+  let seen;
+  setRunReviewForTest(async (args) => {
+    seen = args;
+    return reply();
+  });
+  await captureStdout(() => handleAsk([], { stdin: doc(2500) }));
+  assert.equal(seen.parts.length, 2);
+  assert.equal(seen.prompt, `That was all 2 parts of the input. Now do what it asks.\n\n${ASK_TOOL_RULE}`);
+});
+
+test("ask --resume with a long prompt sends the parts into the resumed conversation", async () => {
+  let seen;
+  setRunReviewForTest(async (args) => {
+    seen = args;
+    return reply({ conversationId: "c-9" });
+  });
+  await captureStdout(() => handleAsk(["--resume", "c-9"], { stdin: doc(2500) }));
+  assert.equal(seen.conversationId, "c-9");
+  assert.equal(seen.parts.length, 2);
+});
+
+test("ask rejects a prompt over 720,000 bytes, and a question too long for the last message", async () => {
   setRunReviewForTest(async () => {
     throw new Error("should not be called");
   });
   await assert.rejects(
-    () => handleAsk([], { stdin: "x".repeat(190_000) }),
-    (err) => err instanceof ConfigError && /190000/.test(err.message) && /192,000 bytes/.test(err.suggestion) && /--file/.test(err.suggestion)
+    () => handleAsk([], { stdin: "x".repeat(720_000) }),
+    (err) => err instanceof ConfigError && /720000/.test(err.message) && /--file/.test(err.suggestion)
+  );
+  await assert.rejects(
+    () => handleAsk(["--", "q".repeat(195_000)], { stdin: "short body" }),
+    (err) => err instanceof ConfigError && /one message can hold 190000/.test(err.message)
   );
 });
 
@@ -457,8 +524,8 @@ test("ask rejects a full prompt over the cap, also when only the folder list mak
       throw new Error("should not be called");
     });
     await assert.rejects(
-      () => handleAsk(dirs.flatMap((d) => ["--dir", d]), { stdin: "x".repeat(150_000) }),
-      (err) => err instanceof ConfigError && /folder lists/.test(err.message) && /190000/.test(err.message)
+      () => handleAsk(dirs.flatMap((d) => ["--dir", d]), { stdin: "x".repeat(700_000) }),
+      (err) => err instanceof ConfigError && /folder lists/.test(err.message) && /720000/.test(err.message)
     );
     // The temp folder is still removed after the error.
     const left = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith("gemini-ask-cwd-"));

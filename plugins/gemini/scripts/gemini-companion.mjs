@@ -21,7 +21,7 @@ import {
   describeDeniedActions
 } from "./lib/render.mjs";
 import { resolveSources } from "./lib/source-resolver.mjs";
-import { truncateOnLineBoundary, byteLength } from "./lib/text-utils.mjs";
+import { truncateOnLineBoundary, byteLength, splitIntoParts } from "./lib/text-utils.mjs";
 import {
   ConfigError,
   AgyAuthError,
@@ -30,13 +30,21 @@ import {
 } from "./lib/errors.mjs";
 
 const MAX_REVIEW_INPUT_BYTES = 40_000;
-// The full ask prompt, with the file and folder lists and the tool rule. It
-// travels on stdin, so no argv limit applies. But agy 1.4.3 shows the model
-// only the first 192,000 bytes of a message, counting its own wrapper of about
-// 400 bytes, and drops the rest without an error. The tool rule comes last, so
-// it would be lost first. In October 2026 on gemini-3.8-flash-low, a
-// 190,000-byte prompt arrived whole, and a 1 MB prompt was cut.
-const MAX_ASK_PROMPT_BYTES = 190_000;
+// agy 1.4.3 shows the model only the first 192,000 bytes of a message,
+// counting its own wrapper of about 400 bytes, and drops the rest without an
+// error. In October 2026 a 190,000-byte message arrived whole on
+// gemini-3.8-flash-low, and a 1 MB one was cut. Argon cut a 250 KB one too.
+const MAX_MESSAGE_BYTES = 190_000;
+// A longer ask prompt goes as parts of at most this size, one per turn of a
+// single agy session. The rest of MAX_MESSAGE_BYTES is room for the part header.
+const PART_BYTES = 180_000;
+// The whole ask prompt, with the file and folder lists and the tool rule, over
+// all parts. It travels on stdin, so no argv limit applies. The cap is the
+// largest size tested live: in October 2026 a 719 KB prompt in 4 parts reached
+// gemini-3.8-flash-low and gemini-4-argon-low whole. At 1 MB, agy compacted the
+// Flash conversation at part 5 of 6, so Gemini kept only a summary of the
+// earlier parts.
+const MAX_ASK_PROMPT_BYTES = 720_000;
 // Below this, a fallback review run would be cut off before it could finish.
 const MIN_FALLBACK_MS = 60_000;
 // Headless agy cannot ask for permission, so one refused tool ends the run with
@@ -172,11 +180,11 @@ function makeNeutralCwd(prefix, allowCommands) {
 
 // Runs agy in a folder that makeNeutralCwd made, and adds the tool calls that
 // the hook denied in this run to deniedActions, so callers see them next to
-// agy's own refusals.
+// agy's own refusals. The runner also reads the log to stop a prompt in parts.
 async function runAgy(args) {
   const log = hookDenialLog(args.cwd);
   fs.rmSync(log, { force: true });
-  const result = await runReviewImpl(args);
+  const result = await runReviewImpl({ ...args, denialLog: log });
   let lines = [];
   try {
     lines = fs.readFileSync(log, "utf8").split("\n").filter(Boolean);
@@ -598,10 +606,9 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   } else {
     bodyText = stdin != null ? stdin : process.stdin.isTTY ? "" : readAllStdinSync();
   }
-  let prompt = [positionals.join(" ").trim(), String(bodyText ?? "").trim()]
-    .filter(Boolean)
-    .join("\n\n");
-  if (!prompt) {
+  const question = positionals.join(" ").trim();
+  const body = String(bodyText ?? "").trim();
+  if (!question && !body) {
     throw new ConfigError("No prompt given.", {
       suggestion: "Pass the prompt as arguments, in a file with --prompt-file, or on stdin, then rerun /gemini:ask."
     });
@@ -655,24 +662,45 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   try {
     const copies = files.map((f, i) => path.join(cwd, `${i + 1}-${path.basename(f)}`));
     files.forEach((f, i) => fs.copyFileSync(f, copies[i], fs.constants.COPYFILE_FICLONE));
+    let suffix = "";
     if (copies.length > 0) {
-      prompt += `\n\nFiles for this request (absolute paths):\n${copies.map((f) => `- ${f}`).join("\n")}`;
+      suffix += `\n\nFiles for this request (absolute paths):\n${copies.map((f) => `- ${f}`).join("\n")}`;
     }
     if (realDirs.length > 0) {
-      prompt += `\n\nFolders for this request (absolute paths):\n${realDirs.map((d) => `- ${d}`).join("\n")}`;
+      suffix += `\n\nFolders for this request (absolute paths):\n${realDirs.map((d) => `- ${d}`).join("\n")}`;
     }
-    prompt += `\n\n${realDirs.length > 0 ? ASK_DIR_TOOL_RULE : ASK_TOOL_RULE}`;
+    suffix += `\n\n${realDirs.length > 0 ? ASK_DIR_TOOL_RULE : ASK_TOOL_RULE}`;
+    let prompt = [question, body].filter(Boolean).join("\n\n") + suffix;
     if (byteLength(prompt) > MAX_ASK_PROMPT_BYTES) {
       throw new ConfigError(
         `The prompt with its file and folder lists is ${byteLength(prompt)} bytes; the limit is ${MAX_ASK_PROMPT_BYTES}.`,
-        { suggestion: "agy shows the model only the first 192,000 bytes of a message. Split the input over several asks, or attach it with --file: Gemini then reads it in parts, not all at once." }
+        { suggestion: "That is the largest size tested. Split the input over several asks, or attach it with --file: Gemini then reads only the pages it looks for." }
       );
+    }
+    // A prompt too long for one message goes as parts, split at line ends. The
+    // last message holds the question, the file and folder lists and the tool rule.
+    let parts = [];
+    if (byteLength(prompt) > MAX_MESSAGE_BYTES) {
+      const pieces = splitIntoParts(body, PART_BYTES);
+      const n = pieces.length;
+      parts = pieces.map(
+        (piece, i) => `Part ${i + 1} of ${n} of the input. Remember it, and do not act on it yet. Do not use tools. Reply with only OK.\n\n${piece}`
+      );
+      const done = `That was all ${n} parts of the input.`;
+      prompt = (question ? `${done}\n\n${question}` : `${done} Now do what it asks.`) + suffix;
+      if (byteLength(prompt) > MAX_MESSAGE_BYTES) {
+        throw new ConfigError(
+          `The question with its file and folder lists is ${byteLength(prompt)} bytes; one message can hold ${MAX_MESSAGE_BYTES}.`,
+          { suggestion: "Put long text in the --prompt-file, and pass fewer --file or --dir paths." }
+        );
+      }
     }
     result = await runAgy({
       prompt,
       cwd,
       model,
       promptTimeoutMs,
+      ...(parts.length > 0 ? { parts } : {}),
       ...(realDirs.length > 0 ? { addDirs: realDirs } : {}),
       ...(options.resume ? { conversationId: options.resume } : {})
     });
