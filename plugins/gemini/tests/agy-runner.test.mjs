@@ -9,6 +9,7 @@ import { runReview } from "../scripts/lib/agy-runner.mjs";
 import {
   AgyAuthError,
   AgyConnectionError,
+  AgyInterruptedError,
   AgyModelError,
   AgyQuotaError,
   AgyTimeoutError,
@@ -261,6 +262,14 @@ test("with a schema but no structured_output, text is empty and response is kept
   assert.equal(result.response, "partial prose");
 });
 
+test("with a schema, a structured_output of null, false, 0 or an empty string is an answer, not a missing one", async () => {
+  for (const value of [null, false, 0, ""]) {
+    const { proc } = makeFakeProc({ stdoutChunks: [agyStream({ response: "x", structured_output: value })] });
+    const result = await runReview({ prompt: "x", jsonSchema: "/s.json", spawnFn: () => proc });
+    assert.equal(result.text, JSON.stringify(value), JSON.stringify(value));
+  }
+});
+
 test("returns denied_actions from the result event when agy refuses a tool", async () => {
   // Shape from agy 1.4.3 in stream mode (build test b3).
   const denied = [{ action: "read_file", display_name: "ReadFile" }];
@@ -457,28 +466,140 @@ test("ENOENT on spawn throws AgyConnectionError suggesting agy install", async (
   );
 });
 
-test("wall-clock timer runs 30s past agy's --print-timeout, then kills", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+// A fake agy child that closes only when `closeOn` is the signal it gets.
+function makeStubbornProc(closeOn) {
   const proc = new EventEmitter();
-  let killed;
+  const signals = [];
   proc.stdin = new Writable({ write: (_c, _e, cb) => cb() });
   proc.stdout = Readable.from([]);
   proc.stderr = Readable.from([]);
   proc.kill = (sig) => {
-    killed = sig;
+    signals.push(sig);
+    if (sig === closeOn) setTimeout(() => proc.emit("close", null, sig), 0);
     return true;
   };
+  return { proc, signals };
+}
+
+test("wall-clock timer runs 30s past agy's --print-timeout, then stops agy and rejects only after it exits", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { proc, signals } = makeStubbornProc("SIGKILL");
   let error;
-  const pending = runReview({ prompt: "x", spawnFn: () => proc, promptTimeoutMs: 1000 }).catch(
-    (err) => (error = err)
-  );
+  const pending = runReview({ prompt: "x", spawnFn: () => proc, promptTimeoutMs: 1000 }).catch((err) => (error = err));
   t.mock.timers.tick(30_999);
   await Promise.resolve();
-  assert.equal(killed, undefined);
+  assert.deepEqual(signals, []);
+  t.mock.timers.tick(1);
+  await Promise.resolve();
+  assert.deepEqual(signals, ["SIGTERM"]);
+  assert.equal(error, undefined, "still waiting for agy to exit");
+  t.mock.timers.tick(1500);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
   t.mock.timers.tick(1);
   await pending;
   assert.ok(error instanceof AgyTimeoutError);
-  assert.equal(killed, "SIGTERM");
+});
+
+for (const sig of ["SIGTERM", "SIGINT"]) {
+  test(`${sig} to the companion stops the agy child and rejects after it exits, then removes its listener`, async () => {
+    const before = process.listenerCount(sig);
+    const { proc, signals } = makeStubbornProc(sig);
+    const pending = runReview({ prompt: "x", spawnFn: () => proc });
+    assert.equal(process.listenerCount(sig), before + 1);
+    process.emit(sig, sig);
+    await assert.rejects(pending, (err) => err instanceof AgyInterruptedError && err.message.includes(sig));
+    assert.deepEqual(signals, [sig]);
+    assert.equal(process.listenerCount(sig), before);
+  });
+}
+
+test("a child that never exits is given up on after the SIGKILL grace time", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { proc, signals } = makeStubbornProc(null);
+  let error;
+  const pending = runReview({ prompt: "x", spawnFn: () => proc, promptTimeoutMs: 1000 }).catch((err) => (error = err));
+  t.mock.timers.tick(31_000);
+  await Promise.resolve();
+  t.mock.timers.tick(1500);
+  t.mock.timers.tick(1500);
+  await pending;
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  assert.ok(error instanceof AgyTimeoutError);
+});
+
+const stepEvent = (step) => JSON.stringify({ event: "step_update", step_update: { conversation_id: "c-1", ...step } });
+
+test("an error step before a compaction fails the run: the model lost the task", async () => {
+  // Shape from B-tests run 05j (a 28 MB video on agy 1.4.3).
+  const { proc } = makeFakeProc({
+    stdoutChunks: [
+      `${INIT_EVENT}\n`,
+      `${stepEvent({ step_index: 2, state: "DONE", step_type: "tool", tool_name: "read_file" })}\n`,
+      `${stepEvent({ step_index: 3, state: "DONE", step_type: "error_message" })}\n`,
+      `${stepEvent({ step_index: 4, state: "DONE", step_type: "checkpoint" })}\n`,
+      `${resultEvent({ response: "I am ready and listening." })}\n`
+    ]
+  });
+  await assert.rejects(
+    () => runReview({ prompt: "x", spawnFn: () => proc }),
+    (err) => err instanceof AgyConnectionError && /after an error step/.test(err.message) && /ready and listening/.test(err.message)
+  );
+});
+
+test("a compacted run with an empty answer fails; one with an answer returns compacted: true", async () => {
+  const compact = `${stepEvent({ step_index: 4, state: "DONE", step_type: "checkpoint" })}\n`;
+  const empty = makeFakeProc({ stdoutChunks: [INIT_EVENT + "\n", compact, `${resultEvent({ response: " " })}\n`] });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => empty.proc }), /is empty/);
+  const ok = makeFakeProc({ stdoutChunks: [INIT_EVENT + "\n", compact, `${resultEvent({ response: "answer" })}\n`] });
+  const result = await runReview({ prompt: "x", spawnFn: () => ok.proc });
+  assert.equal(result.compacted, true);
+  assert.equal(result.text, "answer");
+  // An error step with no compaction does not fail the run.
+  const err = makeFakeProc({
+    stdoutChunks: [INIT_EVENT + "\n", `${stepEvent({ step_index: 3, state: "DONE", step_type: "error_message" })}\n`, `${resultEvent({ response: "fine" })}\n`]
+  });
+  assert.equal((await runReview({ prompt: "x", spawnFn: () => err.proc })).compacted, false);
+});
+
+test("with a schema, a compacted run keeps a structured answer even with an empty response, and fails without one", async () => {
+  const compact = `${stepEvent({ step_index: 4, state: "DONE", step_type: "checkpoint" })}\n`;
+  for (const value of [false, 0, "", null, { ok: true }]) {
+    const { proc } = makeFakeProc({ stdoutChunks: [INIT_EVENT + "\n", compact, `${resultEvent({ response: "", structured_output: value })}\n`] });
+    const result = await runReview({ prompt: "x", jsonSchema: "/s.json", spawnFn: () => proc });
+    assert.equal(result.text, JSON.stringify(value), JSON.stringify(value));
+    assert.equal(result.compacted, true);
+  }
+  const none = makeFakeProc({ stdoutChunks: [INIT_EVENT + "\n", compact, `${resultEvent({ response: "prose only" })}\n`] });
+  await assert.rejects(() => runReview({ prompt: "x", jsonSchema: "/s.json", spawnFn: () => none.proc }), /compacted the conversation after a turn/);
+  // An error step before the compaction still fails, also with a structured answer.
+  const lost = makeFakeProc({
+    stdoutChunks: [
+      INIT_EVENT + "\n",
+      `${stepEvent({ step_index: 3, state: "DONE", step_type: "error_message" })}\n`,
+      compact,
+      `${resultEvent({ response: "", structured_output: { ok: true } })}\n`
+    ]
+  });
+  await assert.rejects(() => runReview({ prompt: "x", jsonSchema: "/s.json", spawnFn: () => lost.proc }), /after an error step/);
+});
+
+test("searches counts each search_web step once, ACTIVE then DONE or ERROR, and only DONE as succeeded", async () => {
+  const search = (step_index, state) => `${stepEvent({ step_index, state, step_type: "tool", tool_name: "search_web" })}\n`;
+  const { proc } = makeFakeProc({
+    stdoutChunks: [
+      INIT_EVENT + "\n",
+      search(2, "ACTIVE"),
+      search(2, "DONE"),
+      search(4, "ACTIVE"),
+      search(4, "ERROR"),
+      search(6, "ACTIVE"),
+      search(6, "DONE"),
+      `${stepEvent({ step_index: 8, state: "DONE", step_type: "tool", tool_name: "read_file" })}\n`,
+      `${resultEvent({ response: "ok" })}\n`
+    ]
+  });
+  const result = await runReview({ prompt: "x", spawnFn: () => proc });
+  assert.deepEqual(result.searches, { attempted: 3, succeeded: 2 });
 });
 
 test("agentVersion is passed through", async () => {

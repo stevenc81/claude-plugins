@@ -1,6 +1,6 @@
 ---
 description: Fact-check conversation content via Antigravity CLI with live web grounding
-argument-hint: '[--model <id>] [focus text]'
+argument-hint: '[--model <id>] [--no-fallback] [focus text]'
 disable-model-invocation: false
 allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" *)
 ---
@@ -28,9 +28,11 @@ Building the command:
 - Do not paste `$ARGUMENTS` into the shell command. Build the arguments yourself.
 - Drop `--wait` and `--background` from the raw arguments. Pass `--json` as its own argument.
 - If the raw arguments include `--model <id>`, pass `--model` and the ID as two arguments, with the ID single-quoted. Leave `--model` out when the caller gave none. The plugin then uses its default model.
+- If the raw arguments include `--no-fallback`, pass it as its own argument. Then a failed run is not retried on Flash.
 - Pass the rest of the raw arguments (the focus text) as ONE single-quoted argument, after a `--` argument, so text that starts with `--` is not read as a flag. Write each `'` inside it as `'\''`. Leave out both when there is no focus text.
 - Example: for the raw arguments `check Node's "LTS" date`, the arguments are `-- 'check Node'\''s "LTS" date'`.
 - Example: for the raw arguments `--model gemini-4-argon-medium focus on dates`, the arguments are `--model 'gemini-4-argon-medium' -- 'focus on dates'`.
+- Example: for the raw arguments `--model gemini-4-argon-high --no-fallback check the dates`, the arguments are `--model 'gemini-4-argon-high' --no-fallback -- 'check the dates'`.
 
 Flow:
 - Always launch the review with `Bash` in the background, even when the raw arguments include `--wait`. A review of a few short claims can take more than 10 minutes, and a foreground `Bash` call stops at 10.

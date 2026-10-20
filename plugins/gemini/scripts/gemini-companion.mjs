@@ -12,7 +12,12 @@ import {
 } from "./lib/process.mjs";
 import { renderPrompt, schemaPath } from "./lib/prompts.mjs";
 import { runReview as realRunReview, DEFAULT_PROMPT_TIMEOUT_MS } from "./lib/agy-runner.mjs";
-import { parseReviewOutput } from "./lib/output-parser.mjs";
+import {
+  parseReviewOutput,
+  parseAgainstSchema,
+  unsupportedSchemaKeywords,
+  SUPPORTED_SCHEMA_KEYWORDS
+} from "./lib/output-parser.mjs";
 import {
   renderReviewResult,
   renderSetupReport,
@@ -26,7 +31,9 @@ import {
   ConfigError,
   AgyAuthError,
   AgyConnectionError,
-  AgyTimeoutError
+  AgyTimeoutError,
+  AgyInterruptedError,
+  OutputError
 } from "./lib/errors.mjs";
 
 const MAX_REVIEW_INPUT_BYTES = 40_000;
@@ -45,18 +52,43 @@ const PART_BYTES = 180_000;
 // Flash conversation at part 5 of 6, so Gemini kept only a summary of the
 // earlier parts.
 const MAX_ASK_PROMPT_BYTES = 720_000;
+// A --file media file over this size is refused before the run. In October
+// 2026, on agy 1.4.3 with gemini-3.8-flash-low, a 24.4 MB video worked and a
+// 28.0 MB one failed: agy compacted the conversation and the model lost the
+// task. Measured for video only; other media and models are not tested.
+export const MAX_MEDIA_BYTES = 24_000_000;
+// The --file types that agy's file tool sends to the model as media.
+const MEDIA_EXTENSIONS = new Set(
+  "mp4 m4v webm mov mkv avi mpeg mpg wmv flv 3gp mp3 wav ogg opus m4a png jpg jpeg webp gif heic heif bmp tiff pdf"
+    .split(" ")
+    .map((e) => `.${e}`)
+);
+// agy 1.4.3 refuses some audio types by file extension, though the model
+// decodes the same bytes. An .m4a file is an MP4 container, so its copy is
+// named .mp4. AAC and FLAC need a conversion.
+const COPY_EXTENSIONS = { ".m4a": ".mp4" };
+const REFUSED_EXTENSIONS = new Set([".aac", ".flac"]);
 // Below this, a fallback review run would be cut off before it could finish.
 const MIN_FALLBACK_MS = 60_000;
 // Headless agy cannot ask for permission, so one refused tool ends the run with
 // no answer at all. agy refuses file writes, and commands that the user's agy
-// rules do not allow. The hook denies every command and subagent (see
-// makeNeutralCwd). Page reads work only if the user allows read_url in their
+// rules do not allow. The hook denies every command, and every subagent but
+// the image-generator of an --image-out run (see makeNeutralCwd). Page reads work only if the user allows read_url in their
 // agy settings. agy's file tool cannot list or search a folder, so Gemini
-// reads files in a --dir folder only by their full path.
-export const ASK_TOOL_RULE =
-  "Tools: use web search, and open web pages only if you need to. To read a local file, use your file-reading tool with its full path, for a file or a file inside a folder given above. You cannot list or search a folder. Never run shell commands, write files or start subagents: this run cannot ask for permission, and a refused tool ends it with no answer.";
-// The oldest agy on which the hook was tested.
-export const MIN_DIR_AGY_VERSION = [1, 4, 2];
+// reads files in a --dir folder only by their full path. The media sentence
+// stays because, in October 2026 on gemini-3.8-flash-low, it gave 16 of 16
+// right audio answers on videos with sound against 14 of 16 without it, and
+// no invented audio on 4 silent videos either way.
+const TOOL_RULE_BASE =
+  "Tools: use web search, and open web pages only if you need to. To read a local file, use your file-reading tool with its full path, for a file or a file inside a folder given above. Your file tool returns images and PDFs, and video frames that can include sound, as media. You cannot list or search a folder.";
+const NO_PERMISSION = "this run cannot ask for permission, and a refused tool ends it with no answer.";
+export const ASK_TOOL_RULE = `${TOOL_RULE_BASE} Never run shell commands, write files or start subagents: ${NO_PERMISSION}`;
+// With --image-out, one subagent type is allowed: agy makes images only
+// through its image-generator subagent (Nano Banana 2), not with a tool of
+// the main model.
+export const IMAGE_TOOL_RULE = `${TOOL_RULE_BASE} To make an image, start one subagent of type image-generator, with no workspace, and give it the whole image request. It saves the image. Never run shell commands, write files or start any other subagent: ${NO_PERMISSION}`;
+// The oldest agy on which the hook, with the matcher "*" and its path checks, was tested.
+export const MIN_DIR_AGY_VERSION = [1, 4, 3];
 
 // True when `version` holds x.y.z at or above `min`. No version counts as no.
 function isAtLeast(version, min) {
@@ -76,9 +108,9 @@ function isAtLeast(version, min) {
 // open, but that needs an attacker who can change the folders while the plugin
 // runs. O_NONBLOCK keeps a named pipe from blocking the open. The check and the
 // read use the same descriptor, so the file cannot be swapped in between.
-function openRegularFile(file, label) {
-  let folder = path.parse(file).root;
-  for (const part of path.dirname(file).split(path.sep).filter(Boolean)) {
+function refuseUserSymlinks(folders, label) {
+  let folder = path.parse(folders).root;
+  for (const part of folders.split(path.sep).filter(Boolean)) {
     folder = path.join(folder, part);
     let st;
     try {
@@ -92,6 +124,10 @@ function openRegularFile(file, label) {
       });
     }
   }
+}
+
+function openRegularFile(file, label) {
+  refuseUserSymlinks(path.dirname(file), label);
   let fd;
   try {
     fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
@@ -121,6 +157,17 @@ function readRegularFile(file, label) {
 function copyRegularFile(file, dest, label) {
   const fd = openRegularFile(file, label);
   try {
+    const { size } = fs.fstatSync(fd);
+    if (size > MAX_MEDIA_BYTES && MEDIA_EXTENSIONS.has(path.extname(file).toLowerCase())) {
+      throw new ConfigError(
+        `${label} is ${size} bytes, over the ${MAX_MEDIA_BYTES}-byte limit for media: ${file}`,
+        {
+          suggestion:
+            "Over this size, the model lost the task in a test (video on gemini-3.8-flash-low, agy 1.4.3). " +
+            "Cut the file: `ffmpeg -i in.mp4 -ss 0 -t 60 -c copy part1.mp4`. Or make it smaller: `ffmpeg -i in.mp4 -vf scale=-2:480 -crf 32 small.mp4`."
+        }
+      );
+    }
     const out = fs.openSync(dest, "wx");
     try {
       const buf = Buffer.allocUnsafe(1 << 20);
@@ -199,27 +246,67 @@ function readAllStdinSync() {
   }
 }
 
-const COMMAND_GATE = fileURLToPath(new URL("./command-gate.mjs", import.meta.url));
+const TOOL_GATE = fileURLToPath(new URL("./tool-gate.mjs", import.meta.url));
 const shellQuote = (s) => `'${s.replaceAll("'", `'\\''`)}'`;
+const realOrResolved = (p) => {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+};
 
 const hookDenialLog = (cwd) => path.join(cwd, ".agents", "denied.jsonl");
-// The tools the hook denies, as regexes that agy matches against the tool
-// name: commands, and subagents with the `schedule` tool that waits for them.
-// A review needs only web search, so it also loses page reads.
-const DENIED = ["run_command", "invoke_subagent", "define_subagent", "manage_subagents", "browser_subagent", "schedule"];
-export const GATED_TOOLS = `^(${DENIED.join("|")})$`;
-export const REVIEW_GATED_TOOLS = `^(${[...DENIED, "read_url_content", "open_browser_url"].join("|")})$`;
+// The tools each run allows. The hook denies every other tool (see
+// tool-gate.mjs). `finish` returns the --json-schema answer. Both runs may
+// search and open pages; the user's agy rules decide whether a page opens
+// (read_url). A page can hold instructions for the model, but search results
+// already can, and a search query can already carry data out. So the guard is
+// that no run can read a secret: a review reads no local file, and an ask
+// reads only inside its roots.
+export const REVIEW_TOOLS = ["search_web", "read_url_content", "finish"];
+export const ASK_TOOLS = ["search_web", "read_url_content", "finish"];
+// agy 1.4.3 lists the file reader as view_file, and streams and gates it as
+// read_file. Its init event also lists list_dir, grep_search and find_by_name,
+// but a headless model does not get them (live test, October 2026).
+export const ASK_FILE_TOOLS = ["read_file", "view_file"];
+// With --image-out, the image-generator subagent calls generate_image, whose
+// reference images pass the path check, and send_message to answer the
+// conversation that started it (see tool-gate.mjs).
+export const IMAGE_TOOLS = ["generate_image"];
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+// agy keeps its sign-in token, settings and every saved conversation here.
+// No file tool may read it, also when a --dir folder holds it.
+let agyHome = path.join(os.homedir(), ".gemini", "antigravity-cli");
+/** Test-only hook: point the plugin at another agy home folder. */
+export function setAgyHomeForTest(dir) {
+  agyHome = dir ?? path.join(os.homedir(), ".gemini", "antigravity-cli");
+}
 
-// agy loads .agents/hooks.json from its working folder. The hook denies every
-// tool that `matcher` names (see command-gate.mjs).
-function makeNeutralCwd(prefix, matcher) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  const command = [process.execPath, COMMAND_GATE, hookDenialLog(dir)].map(shellQuote).join(" ");
-  const hook = { type: "command", command, timeout: 10 };
+// agy loads .agents/hooks.json from its working folder. The hook sees every
+// tool call (matcher "*") and allows only `tools`, and `fileTools` on paths
+// inside the run's files/ folder or a `dirs` folder. The .agents folder, with
+// the hook and its log, is never readable. Returns the real path of the folder,
+// so that the paths in the prompt match the ones that the hook resolves.
+function makeNeutralCwd(prefix, { tools, fileTools = [], imageTools = [], subagents = [], dirs = [] }) {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   fs.mkdirSync(path.join(dir, ".agents"));
+  fs.mkdirSync(path.join(dir, "files"));
+  const policy = {
+    log: hookDenialLog(dir),
+    ...(subagents.length > 0 ? { parents: path.join(dir, ".agents", "parents.txt") } : {}),
+    tools,
+    fileTools,
+    imageTools,
+    subagents,
+    roots: fileTools.length > 0 ? [path.join(dir, "files"), ...dirs] : [],
+    denied: [path.join(dir, ".agents"), realOrResolved(agyHome)]
+  };
+  const command = [process.execPath, TOOL_GATE, JSON.stringify(policy)].map(shellQuote).join(" ");
+  const hook = { type: "command", command, timeout: 10 };
   fs.writeFileSync(
     path.join(dir, ".agents", "hooks.json"),
-    JSON.stringify({ "gemini-plugin-command-gate": { PreToolUse: [{ matcher, hooks: [hook] }] } })
+    JSON.stringify({ "gemini-plugin-tool-gate": { PreToolUse: [{ matcher: "*", hooks: [hook] }] } })
   );
   return dir;
 }
@@ -283,13 +370,14 @@ export async function handleReview(argv, { stdin = null } = {}) {
   // one single-quoted argument, so nothing is re-split here.
   const { options, positionals } = parseArgs(argv, {
     allowPositionals: true,
-    valueFlags: ["--timeout-ms", "--model"]
+    valueFlags: ["--timeout-ms", "--model"],
+    booleanFlags: ["--no-fallback"]
   });
   // parseArgs knows --cwd for every command, but review must always run in its
   // gated temp folder, so it refuses --cwd.
   if (options.cwd != null) {
     throw new ConfigError("Unknown flag: --cwd", {
-      suggestion: "/gemini:review takes only --model, --json and --timeout-ms. Put focus text after --."
+      suggestion: "/gemini:review takes only --model, --no-fallback, --json and --timeout-ms. Put focus text after --."
     });
   }
   const promptTimeoutMs = promptTimeoutFrom(options);
@@ -317,9 +405,9 @@ export async function handleReview(argv, { stdin = null } = {}) {
 
   // Evaluate the text in isolation: create an empty temp directory and use
   // that as the working directory so the agent has no repo to wander into
-  // when assessing claims. Its hook denies every command, subagent and page
-  // read: a web page can hold instructions for the model.
-  const neutralCwd = makeNeutralCwd("gemini-review-cwd-", REVIEW_GATED_TOOLS);
+  // when assessing claims. Its hook allows only web search and page reads,
+  // and denies every file read, command and subagent.
+  const neutralCwd = makeNeutralCwd("gemini-review-cwd-", { tools: REVIEW_TOOLS });
 
   const agyVersion = binaryAvailableImpl("agy", ["--version"], { cwd: neutralCwd }).detail;
 
@@ -341,8 +429,17 @@ export async function handleReview(argv, { stdin = null } = {}) {
     try {
       result = await runAgy({ ...runArgs, model: requestedModel });
     } catch (err) {
-      // Flash cannot fix a sign-in problem, and a hard timeout used the whole budget.
-      if (err instanceof AgyAuthError || err instanceof AgyTimeoutError) throw err;
+      // Flash cannot fix a sign-in problem, a hard timeout used the whole
+      // budget, and a stopped run must not start another. A caller that would
+      // discard a Flash result turns the fallback off.
+      if (
+        err instanceof AgyAuthError ||
+        err instanceof AgyTimeoutError ||
+        err instanceof AgyInterruptedError ||
+        options["no-fallback"]
+      ) {
+        throw err;
+      }
       if (requestedModel === FALLBACK_FAMILY || requestedModel.startsWith(`${FALLBACK_FAMILY}-`)) throw err;
       const leftMs = deadline - Date.now();
       if (leftMs < MIN_FALLBACK_MS) {
@@ -386,6 +483,7 @@ export async function handleReview(argv, { stdin = null } = {}) {
           stopReason: result.stopReason,
           timedOut,
           tokens: result.tokens,
+          searches: result.searches ?? null,
           deniedActions,
           parsed: parsed.parsed,
           parseError: parsed.parseError,
@@ -407,7 +505,8 @@ export async function handleReview(argv, { stdin = null } = {}) {
     requestedModel,
     fallbackReason,
     deniedActions,
-    timedOut
+    timedOut,
+    searches: result.searches ?? null
   });
   process.stdout.write(rendered);
 }
@@ -632,7 +731,7 @@ export async function handleSetup(argv) {
 export async function handleAsk(argv, { stdin = null } = {}) {
   const { options, positionals } = parseArgs(argv, {
     allowPositionals: true,
-    valueFlags: ["--model", "--timeout-ms", "--prompt-file", "--resume"],
+    valueFlags: ["--model", "--timeout-ms", "--prompt-file", "--resume", "--schema", "--image-out"],
     listFlags: ["--file", "--dir"]
   });
   const promptTimeoutMs = promptTimeoutFrom(options);
@@ -655,6 +754,43 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   }
 
   const files = (options.file ?? []).map((f) => path.resolve(baseDir, f));
+  for (const f of files) {
+    if (REFUSED_EXTENSIONS.has(path.extname(f).toLowerCase())) {
+      throw new ConfigError(`agy cannot read ${path.extname(f)} audio: ${f}`, {
+        suggestion: "Convert it to MP3 first, for example `ffmpeg -i x.flac x.mp3`, then attach the MP3."
+      });
+    }
+  }
+  // --image-out: the folder that gets the images. It must exist, and no part
+  // of its path may be a link that a user made.
+  let imageOut = null;
+  if (options["image-out"] != null) {
+    imageOut = path.resolve(baseDir, options["image-out"]);
+    refuseUserSymlinks(imageOut, "--image-out");
+    if (!fs.statSync(imageOut, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new ConfigError(`--image-out is not a folder: ${imageOut}`, { suggestion: "Make the folder first, then rerun." });
+    }
+  }
+  // --schema: agy returns the answer as JSON for this schema, and the plugin
+  // checks it. The schema may use only the keywords the check knows.
+  let schema = null;
+  if (options.schema != null) {
+    const schemaFile = path.resolve(baseDir, options.schema);
+    try {
+      schema = JSON.parse(readRegularFile(schemaFile, "Schema file"));
+    } catch (err) {
+      if (err instanceof ConfigError) throw err;
+      throw new ConfigError(`Schema file is not valid JSON: ${schemaFile} (${err.message})`, {
+        suggestion: "Pass a JSON Schema file."
+      });
+    }
+    const unknown = unsupportedSchemaKeywords(schema);
+    if (unknown.length > 0) {
+      throw new ConfigError(`The schema uses keywords that the plugin cannot check: ${unknown.join(", ")}.`, {
+        suggestion: `Use only ${SUPPORTED_SCHEMA_KEYWORDS.join(", ")}, with one type name per "type".`
+      });
+    }
+  }
   const dirs = (options.dir ?? []).map((d) => path.resolve(baseDir, d));
   for (const d of dirs) {
     if (!fs.statSync(d, { throwIfNoEntry: false })?.isDirectory()) {
@@ -665,7 +801,8 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   }
   // With --dir, the hook is the only thing that stops a command that the
   // user's agy rules allow, such as `grep x > file`, from writing into the
-  // user's folders. An agy that ignores the hook would not say so.
+  // user's folders, and a read of agy's own folder when --dir holds it. An agy
+  // that ignores the hook would not say so.
   if (dirs.length > 0) {
     const version = binaryAvailableImpl("agy", ["--version"]).detail;
     if (!isAtLeast(version, MIN_DIR_AGY_VERSION)) {
@@ -676,7 +813,7 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   }
   // The caller chooses the folders, so any folder is allowed, also / or the
   // home folder. agy's file tool reads only these folders.
-  const realDirs = [...new Set(dirs.map((d) => fs.realpathSync(d)))];
+  const realDirs = [...new Set(dirs.map((d) => fs.realpathSync.native(d)))];
   const model = options.model || DEFAULT_ASK_MODEL;
 
   // agy runs from an empty temp folder. Each --file is copied in, so agy sees
@@ -684,10 +821,22 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   // --add-dir and read in place. agy keeps its own conversation history
   // elsewhere; only the temp folder is removed. So a --resume turn must attach
   // its files and folders again.
-  const cwd = makeNeutralCwd("gemini-ask-cwd-", GATED_TOOLS);
+  const cwd = makeNeutralCwd("gemini-ask-cwd-", {
+    tools: ASK_TOOLS,
+    fileTools: ASK_FILE_TOOLS,
+    ...(imageOut ? { imageTools: IMAGE_TOOLS, subagents: ["image-generator"] } : {}),
+    dirs: realDirs
+  });
+  // A new conversation has no images yet. A --resume one may have some from
+  // earlier turns, which are not this run's.
+  const imagesBefore = imageOut && options.resume ? imageFiles(options.resume) : new Map();
   let result;
   try {
-    const copies = files.map((f, i) => path.join(cwd, `${i + 1}-${path.basename(f)}`));
+    const copies = files.map((f, i) => {
+      const ext = path.extname(f);
+      const name = path.basename(f, ext) + (COPY_EXTENSIONS[ext.toLowerCase()] ?? ext);
+      return path.join(cwd, "files", `${i + 1}-${name}`);
+    });
     files.forEach((f, i) => copyRegularFile(f, copies[i], "File"));
     let suffix = "";
     if (copies.length > 0) {
@@ -696,7 +845,7 @@ export async function handleAsk(argv, { stdin = null } = {}) {
     if (realDirs.length > 0) {
       suffix += `\n\nFolders for this request (absolute paths):\n${realDirs.map((d) => `- ${d}`).join("\n")}`;
     }
-    suffix += `\n\n${ASK_TOOL_RULE}`;
+    suffix += `\n\n${imageOut ? IMAGE_TOOL_RULE : ASK_TOOL_RULE}`;
     let prompt = [question, body].filter(Boolean).join("\n\n") + suffix;
     if (byteLength(prompt) > MAX_ASK_PROMPT_BYTES) {
       throw new ConfigError(
@@ -722,11 +871,18 @@ export async function handleAsk(argv, { stdin = null } = {}) {
         );
       }
     }
+    // agy reads the schema from a copy in .agents, which no file tool may read.
+    let jsonSchema;
+    if (schema) {
+      jsonSchema = path.join(cwd, ".agents", "schema.json");
+      fs.writeFileSync(jsonSchema, JSON.stringify(schema));
+    }
     result = await runAgy({
       prompt,
       cwd,
       model,
       promptTimeoutMs,
+      ...(jsonSchema ? { jsonSchema } : {}),
       ...(parts.length > 0 ? { parts } : {}),
       ...(realDirs.length > 0 ? { addDirs: realDirs } : {}),
       ...(options.resume ? { conversationId: options.resume } : {})
@@ -745,17 +901,93 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   const conversationId = result.conversationId ?? null;
   const deniedActions = result.deniedActions ?? [];
   const timedOut = Boolean(result.timedOut);
+  const compacted = Boolean(result.compacted);
+  // With --schema, the answer is agy's structured_output, checked against the
+  // schema. agy can report success with none (agy issue #1065), so an empty
+  // or invalid one fails the ask.
+  let structuredOutput = null;
+  if (schema) {
+    const checked = parseAgainstSchema(result.text, schema);
+    if (checked.parseError) {
+      const refused = describeDeniedActions(deniedActions);
+      throw new OutputError(
+        `Gemini did not return JSON that fits the schema: ${checked.parseError}${refused ? ` agy refused these tools: ${refused}.` : ""} Its text answer: ${JSON.stringify(String(result.response ?? "")).slice(0, 300)}`,
+        { suggestion: `Rerun the ask${conversationId ? `, or continue it with --resume ${conversationId}` : ""}.` }
+      );
+    }
+    structuredOutput = checked.parsed;
+  }
+  let images = null;
+  if (imageOut) {
+    images = exportImages(conversationId, imagesBefore, imageOut);
+    if (images.length === 0) {
+      throw new OutputError(`Gemini made no image. Its answer: ${JSON.stringify(String(result.response ?? "")).slice(0, 300)}`, {
+        suggestion: "Rerun the ask. agy's image tool fails on some plans (agy issue #1202)."
+      });
+    }
+  }
   if (options.json) {
     process.stdout.write(
       JSON.stringify(
-        { model, conversationId, response: result.response, tokens: result.tokens, deniedActions, timedOut },
+        {
+          model,
+          conversationId,
+          response: result.response,
+          structuredOutput,
+          images,
+          tokens: result.tokens,
+          deniedActions,
+          timedOut,
+          compacted
+        },
         null,
         2
       ) + "\n"
     );
     return;
   }
-  process.stdout.write(renderAskResult({ response: result.response, deniedActions, timedOut, conversationId }));
+  const response = schema ? `${JSON.stringify(structuredOutput, null, 2)}\n` : result.response;
+  process.stdout.write(renderAskResult({ response, deniedActions, timedOut, compacted, conversationId, images: images ?? [] }));
+}
+
+// agy's image-generator saves each image at the top of the parent
+// conversation's folder in agy's brain folder. The regular image files there,
+// each with its size, change time and inode, so that a file the run did not
+// make or change can be told apart.
+function imageFiles(conversationId) {
+  const files = new Map();
+  if (!/^[0-9a-f-]{36}$/i.test(String(conversationId))) return files;
+  const brain = path.join(agyHome, "brain", conversationId);
+  let entries = [];
+  try {
+    entries = fs.readdirSync(brain, { withFileTypes: true });
+  } catch {
+    return files;
+  }
+  for (const e of entries) {
+    if (!e.isFile() || !IMAGE_EXTENSIONS.has(path.extname(e.name).toLowerCase())) continue;
+    const st = fs.lstatSync(path.join(brain, e.name));
+    if (st.size > 0) files.set(path.join(brain, e.name), `${st.size}:${st.mtimeMs}:${st.ino}`);
+  }
+  return files;
+}
+
+// Copies the image files that are new or changed since `before` to
+// `outDir`, through copyRegularFile (O_NOFOLLOW, the same descriptor, no
+// overwrite), and returns the copies. Nothing in agy's folder is changed.
+function exportImages(conversationId, before, outDir) {
+  const made = [...imageFiles(conversationId)].filter(([f, stamp]) => before.get(f) !== stamp).map(([f]) => f);
+  const taken = made.map((f) => path.join(outDir, path.basename(f))).filter((d) => fs.lstatSync(d, { throwIfNoEntry: false }));
+  if (taken.length > 0) {
+    throw new ConfigError(`--image-out already has a file named like a new image: ${taken.join(", ")}`, {
+      suggestion: `The images stay in ${path.dirname(made[0])}. Pass an empty folder, or move the files, and copy them from there.`
+    });
+  }
+  return made.map((f) => {
+    const dest = path.join(outDir, path.basename(f));
+    copyRegularFile(f, dest, "Image");
+    return dest;
+  });
 }
 
 function printUsage() {
@@ -763,8 +995,8 @@ function printUsage() {
     [
       "Usage:",
       "  node scripts/gemini-companion.mjs setup [--json]",
-      "  node scripts/gemini-companion.mjs review [--model <id>] [--json] [--timeout-ms <n>] [focus text...]  (content to review read from stdin)",
-      "  node scripts/gemini-companion.mjs ask [--model <id>] [--file <path>]... [--dir <folder>]... [--prompt-file <path>] [--resume <conversation-id>] [--timeout-ms <n>] [--json] [prompt...]  (prompt from arguments, plus --prompt-file or stdin)",
+      "  node scripts/gemini-companion.mjs review [--model <id>] [--no-fallback] [--json] [--timeout-ms <n>] [focus text...]  (content to review read from stdin)",
+      "  node scripts/gemini-companion.mjs ask [--model <id>] [--file <path>]... [--dir <folder>]... [--prompt-file <path>] [--schema <file>] [--image-out <folder>] [--resume <conversation-id>] [--timeout-ms <n>] [--json] [prompt...]  (prompt from arguments, plus --prompt-file or stdin)",
       ""
     ].join("\n")
   );

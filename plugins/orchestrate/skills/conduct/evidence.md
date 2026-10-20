@@ -68,13 +68,23 @@ Arena caveats:
 | Context window | Claude 1M. Argon and 3.8 Flash 1M. In Codex: 6.1 Sol 500k, Astra and Luna 272k. | Vendor docs, ~/.codex/models_cache.json |
 | AA-LCR (about 100k tokens) | Opus 85%, Fable 85%, Flash medium 84%, 6.1 Sol max 83%, Luna 83%, Argon 80% (no clear winner) | artificialanalysis.ai |
 | GraphWalks 256k–1M (vendor) | Argon 84.2, Astra 71.8, Opus 66.8 | deepmind.google/models/gemini |
-| Context through `agy` 1.4.3 | `agy` cuts one message at 192,000 bytes. Sent in parts in one session, a document stays whole up to about 165k tokens. At about 169k (Argon) and 164k to 205k (Flash), `agy` compacts the conversation into a summary. | Live tests with gemini-4-argon-low and gemini-3.8-flash-low, 2026-10-20 |
+| Context through `agy` 1.4.3 | `agy` cuts one message at 192,000 bytes. Sent in parts in one session, a document stays whole up to about 165k tokens. At about 169k (Argon) and 164k to 205k (Flash), `agy` compacts the conversation into a summary. This is what `agy` allows, not the API's 1M (row above). Users report compaction at 240k to 280k tokens on other setups (agy issue #1245). I have not checked why the numbers differ. | Live tests with gemini-4-argon-low and gemini-3.8-flash-low, 2026-10-20 |
 | Arena Longer Query | Argon 1543±14, Opus 1523±11 (tie) | arena.ai |
 | Video (vendor, LVBench) | Argon 91.7, Flash 87.8, Astra 87.5, Opus 83.7 | deepmind.google |
 | Media input in this setup | `codex exec` takes images only (`-i`). The Claude Code Read tool takes images and PDFs. Only Gemini takes audio and video. | `codex exec --help`, Read tool description, 2026-10-16 |
 | Video effort (vendor) | Flash high for dense or fast video and videos over 60 minutes. Medium for general video Q&A. Low for transcript search. | Vertex AI guide for 3.8 Flash |
 | Audio | Both Gemini models accept audio. No benchmark found. | ai.google.dev |
+| Media through `agy` 1.4.3, what the model got | Read right: PNG, JPEG, WebP and GIF images; a PDF's text and a chart that exists only as pixels; video frames in MP4, WebM, MOV, MKV and AVI; MP3, WAV and OGG speech. The sound track of a video with sound: heard in 8 of 10 runs (B), then 14 of 16 without and 16 of 16 with the plugin's media sentence (F). No sound was invented for 8 silent-video runs. The model said it got about 1 frame per second: it misread 14-pixel text in a 720p video, and end times were off by up to 1 s. A YouTube link was not watched: the model searched the web. Formats, the size limit and conversions are transport facts: see the gemini plugin README, "Media". | Live tests on gemini-3.8-flash-low, mostly one run each, 2026-10-20 (r2 B-tests.md, F-build.md) |
 | Vision Arena | 6.1 Sol 1294±14, Opus 1293±13, Flash 1289±11, Astra 1286±11 (tie). Argon not listed. | arena.ai, 2026-10-09 |
+
+## Codex CLI and plugin
+
+| Fact | Numbers | Source |
+|---|---|---|
+| `codex exec` 0.163.0 output | `-o <file>` holds only the final answer. `--output-schema` gave valid JSON with every required key. The first `--json` line holds the `thread_id`. The `--json` stream left out 4 of 7 commands in one run. | Live tests with gpt-6-luna, low, 2026-10-20 (r2 C-codex.md) |
+| `codex exec resume <thread_id>` access | With `-c sandbox_mode=workspace-write`: write access kept. With the same permission-profile flags as turn 1: the profile kept. With no access flag: read-only, though turn 1 was workspace-write. So "resume restores a thread's permissions" (Codex changelog, 2026-10-15) did not hold for `exec resume`. `resume` has no `-C`: it runs in the current folder. | Live tests with gpt-6-luna, low, one run each, 2026-10-20 (r2 F-build.md) |
+| Sandbox reads | Every `-s` mode can read the whole disk, including `~`. A permission profile with `":minimal"="read"` blocked `~`, `$TMPDIR` and `/opt/homebrew`. With `"/opt/homebrew"="read"` added, Python ran. Sibling folders under `/private/tmp` stayed readable and writable in both profile tests. I have not checked why. | Live tests with gpt-6-luna, low, 2026-10-20 (r2 C-codex.md, F-build.md) |
+| Codex plugin 1.0.6 (`codex:codex-rescue`, `/codex:*`) | Effort up to xhigh only: max and ultra fail. Sandbox only read-only or `--write`. No network, web search, images or output schema. Resumes only the newest task of the session. The agent may rewrite the prompt. | Plugin source read, 2026-10-20 (r2 C-codex.md) |
 
 ## Speed and bulk work
 

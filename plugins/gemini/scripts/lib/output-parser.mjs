@@ -55,12 +55,67 @@ export function parseReviewOutput(rawText) {
   return parseStructuredOutput(rawText, "review-output");
 }
 
+// The keywords that `validate` checks, and ones that only describe.
+export const SUPPORTED_SCHEMA_KEYWORDS = [
+  "type",
+  "properties",
+  "required",
+  "additionalProperties",
+  "items",
+  "enum",
+  "minimum",
+  "description",
+  "title",
+  "$schema"
+];
+
+/** The keywords in a caller's schema that `validate` would skip, so it cannot check them. */
+export function unsupportedSchemaKeywords(schema) {
+  const found = new Set();
+  const walk = (node) => {
+    if (node === null || typeof node !== "object" || Array.isArray(node)) {
+      found.add("(a schema that is not an object)");
+      return;
+    }
+    // validate checks properties and items only under their own type.
+    const has = (k) => Object.hasOwn(node, k);
+    if ((has("properties") || has("required") || has("additionalProperties")) && node.type !== "object") {
+      found.add('properties without "type": "object"');
+    }
+    if (has("items") && node.type !== "array") found.add('items without "type": "array"');
+    for (const [key, value] of Object.entries(node)) {
+      if (!SUPPORTED_SCHEMA_KEYWORDS.includes(key)) found.add(key);
+      else if (key === "type" && typeof value !== "string") found.add("type with a list of types");
+      else if (key === "properties") Object.values(value ?? {}).forEach(walk);
+      else if (key === "items") walk(value);
+      else if (key === "additionalProperties" && typeof value !== "boolean") found.add("additionalProperties with a schema");
+    }
+  };
+  walk(schema);
+  return [...found];
+}
+
+/** Like parseStructuredOutput, for a schema that the caller passed in. */
+export function parseAgainstSchema(rawText, schema) {
+  const inner = stripFences(rawText);
+  if (!inner) return { parsed: null, parseError: "Empty output from model.", rawOutput: rawText ?? "" };
+  let parsed;
+  try {
+    parsed = JSON.parse(inner);
+  } catch (err) {
+    return { parsed: null, parseError: `JSON parse failed: ${err.message}`, rawOutput: rawText };
+  }
+  const errors = validate(parsed, schema, "");
+  if (errors.length > 0) return { parsed: null, parseError: `Schema validation failed: ${errors.join("; ")}`, rawOutput: rawText };
+  return { parsed, parseError: null, rawOutput: rawText };
+}
+
 function validate(value, schema, pathStr) {
   const errors = [];
   const location = pathStr || "(root)";
 
   if (schema.enum) {
-    if (!schema.enum.includes(value)) {
+    if (!schema.enum.some((option) => sameJson(option, value))) {
       errors.push(`${location}: expected one of ${JSON.stringify(schema.enum)}, got ${JSON.stringify(value)}`);
       return errors;
     }
@@ -88,7 +143,7 @@ function validate(value, schema, pathStr) {
   if (schema.type === "object" && value !== null && typeof value === "object" && !Array.isArray(value)) {
     const required = schema.required ?? [];
     for (const key of required) {
-      if (!(key in value)) {
+      if (!Object.hasOwn(value, key)) {
         errors.push(`${location}: missing required property "${key}"`);
       }
     }
@@ -102,7 +157,7 @@ function validate(value, schema, pathStr) {
     }
     if (schema.properties) {
       for (const [key, childSchema] of Object.entries(schema.properties)) {
-        if (key in value) {
+        if (Object.hasOwn(value, key)) {
           errors.push(...validate(value[key], childSchema, joinPath(pathStr, key)));
         }
       }
@@ -118,6 +173,15 @@ function validate(value, schema, pathStr) {
   }
 
   return errors;
+}
+
+// True when two JSON values are equal: by value, also for objects and arrays.
+function sameJson(a, b) {
+  if (a === b) return true;
+  if (jsonType(a) !== jsonType(b) || a === null || typeof a !== "object") return false;
+  if (Array.isArray(a)) return a.length === b.length && a.every((x, i) => sameJson(x, b[i]));
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => Object.hasOwn(b, k) && sameJson(a[k], b[k]));
 }
 
 function jsonType(v) {

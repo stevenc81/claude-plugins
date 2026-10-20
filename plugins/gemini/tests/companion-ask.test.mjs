@@ -9,9 +9,11 @@ import {
   setBinaryAvailableForTest,
   DEFAULT_ASK_MODEL,
   ASK_TOOL_RULE,
-  GATED_TOOLS
+  IMAGE_TOOL_RULE,
+  MAX_MEDIA_BYTES,
+  setAgyHomeForTest
 } from "../scripts/gemini-companion.mjs";
-import { ConfigError, AgyModelError } from "../scripts/lib/errors.mjs";
+import { ConfigError, AgyModelError, OutputError } from "../scripts/lib/errors.mjs";
 import { splitIntoParts } from "../scripts/lib/text-utils.mjs";
 import { execFileSync } from "node:child_process";
 
@@ -27,6 +29,15 @@ function captureStdout(fn) {
       process.stdout.write = orig;
     })
     .then(() => chunks.join(""));
+}
+
+// Runs the hook the way agy does, from the hooks.json in the temp folder, and
+// returns its decision. agy names the conversation that makes the call.
+function hookDecision(cwd, toolCall, conversationId = "parent-1") {
+  const hooks = JSON.parse(fs.readFileSync(path.join(cwd, ".agents", "hooks.json"), "utf8"));
+  const { command } = hooks["gemini-plugin-tool-gate"].PreToolUse[0].hooks[0];
+  const input = JSON.stringify({ toolCall, conversationId });
+  return JSON.parse(execFileSync("sh", ["-c", command], { input, encoding: "utf8" })).decision;
 }
 
 function reply(fields = {}) {
@@ -47,7 +58,7 @@ function reply(fields = {}) {
 const useAgyVersion = (detail) => setBinaryAvailableForTest(() => ({ available: true, detail }));
 beforeEach(() => {
   setRunReviewForTest(null);
-  useAgyVersion("1.4.2");
+  useAgyVersion("1.4.3");
 });
 afterEach(() => {
   setRunReviewForTest(null);
@@ -60,17 +71,23 @@ test("ask uses the default model, runs from a fresh temp folder and removes it",
     seen = args;
     assert.ok(fs.existsSync(args.cwd), "temp folder exists while agy runs");
     const hooks = JSON.parse(fs.readFileSync(path.join(args.cwd, ".agents", "hooks.json"), "utf8"));
-    const [group] = hooks["gemini-plugin-command-gate"].PreToolUse;
-    assert.equal(group.matcher, GATED_TOOLS);
-    for (const tool of ["run_command", "invoke_subagent", "define_subagent", "manage_subagents", "browser_subagent", "schedule"]) {
-      assert.match(tool, new RegExp(group.matcher), tool);
+    const [group] = hooks["gemini-plugin-tool-gate"].PreToolUse;
+    assert.equal(group.matcher, "*", "the hook sees every tool call");
+    assert.match(group.hooks[0].command, /\/scripts\/tool-gate\.mjs' '\{/);
+    // Ask keeps web search, page reads and the schema answer.
+    for (const name of ["search_web", "read_url_content", "finish"]) {
+      assert.equal(hookDecision(args.cwd, { name, args: {} }), "allow", name);
     }
-    // Ask keeps web search, page reads and file reads.
-    for (const tool of ["search_web", "read_file", "read_url_content", "send_command_input", "run_command_x"]) {
-      assert.doesNotMatch(tool, new RegExp(group.matcher), tool);
+    // Every other tool is denied, also one that agy does not have yet.
+    for (const name of ["run_command", "invoke_subagent", "schedule", "write_to_file", "call_mcp_tool", "browser_subagent", "list_dir", "generate_image", "send_message", "a_new_tool"]) {
+      assert.equal(hookDecision(args.cwd, { name, args: { DirectoryPath: path.join(args.cwd, "files") } }), "deny", name);
     }
-    assert.equal(group.hooks[0].command.split("' '").length, 3, "node, the gate and the log");
-    assert.match(group.hooks[0].command, /\/scripts\/command-gate\.mjs' '.+\/\.agents\/denied\.jsonl'$/);
+    // The file reader may read the copies, never the hook and its log.
+    fs.writeFileSync(path.join(args.cwd, "files", "x.txt"), "x");
+    assert.equal(hookDecision(args.cwd, { name: "read_file", args: { Path: path.join(args.cwd, "files", "x.txt") } }), "allow");
+    assert.equal(hookDecision(args.cwd, { name: "view_file", args: { AbsolutePath: path.join(args.cwd, "files", "x.txt") } }), "allow");
+    assert.equal(hookDecision(args.cwd, { name: "read_file", args: { Path: path.join(args.cwd, ".agents", "hooks.json") } }), "deny");
+    fs.rmSync(path.join(args.cwd, ".agents", "denied.jsonl"));
     return reply();
   });
   const out = await captureStdout(() => handleAsk([], { stdin: "Reply with PONG." }));
@@ -82,7 +99,7 @@ test("ask uses the default model, runs from a fresh temp folder and removes it",
   assert.equal(seen.jsonSchema, undefined);
   assert.equal(seen.conversationId, undefined);
   assert.equal(seen.denialLog, path.join(seen.cwd, ".agents", "denied.jsonl"), "the runner can read the hook's denials");
-  assert.equal(path.dirname(seen.cwd), path.resolve(os.tmpdir()));
+  assert.equal(path.dirname(seen.cwd), fs.realpathSync(os.tmpdir()), "a real path, as the hook resolves paths");
   assert.match(path.basename(seen.cwd), /^gemini-ask-cwd-/);
   assert.equal(fs.existsSync(seen.cwd), false, "temp folder is removed afterwards");
 });
@@ -140,7 +157,8 @@ test("ask --file copies each file into agy's temp folder and lists the copies in
     let copied;
     setRunReviewForTest(async (args) => {
       seen = args;
-      copied = fs.readdirSync(args.cwd).filter((n) => n !== ".agents").sort().map((n) => [n, fs.readFileSync(path.join(args.cwd, n), "utf8")]);
+      const files = path.join(args.cwd, "files");
+      copied = fs.readdirSync(files).sort().map((n) => [n, fs.readFileSync(path.join(files, n), "utf8")]);
       return reply();
     });
     await captureStdout(() =>
@@ -154,7 +172,7 @@ test("ask --file copies each file into agy's temp folder and lists the copies in
     assert.deepEqual(copied, [["1-a.txt", "A"], ["2-b.txt", "B"], ["3-c.txt", "C"]]);
     assert.match(seen.prompt, /^Compare these files\./);
     for (const name of ["1-a.txt", "2-b.txt", "3-c.txt"]) {
-      assert.ok(seen.prompt.includes(`- ${path.join(seen.cwd, name)}`), `prompt lists ${name}`);
+      assert.ok(seen.prompt.includes(`- ${path.join(seen.cwd, "files", name)}`), `prompt lists ${name}`);
     }
     assert.notEqual(seen.cwd, dir, "agy still runs from its own temp folder");
     assert.equal(fs.existsSync(seen.cwd), false, "the temp folder and its copies are removed");
@@ -190,30 +208,156 @@ test("ask returns the response verbatim and adds notes for refused tools and tim
   assert.equal(cut, "Half an ans\n\n[note] agy hit its time limit, so this answer was cut off.\n[conversation] c-1\n");
 });
 
-test("ask --json returns model, conversationId, response, tokens, deniedActions and timedOut", async () => {
+test("ask --json returns model, conversationId, response, structuredOutput, images, tokens, deniedActions, timedOut and compacted", async () => {
   setRunReviewForTest(async () => reply());
   const out = await captureStdout(() => handleAsk(["--json"], { stdin: "Reply with PONG." }));
   assert.deepEqual(JSON.parse(out), {
     model: DEFAULT_ASK_MODEL,
     conversationId: "c-1",
     response: "PONG\n",
+    structuredOutput: null,
+    images: null,
     tokens: { input_tokens: 11828, output_tokens: 2, total_tokens: 11830 },
     deniedActions: [],
-    timedOut: false
+    timedOut: false,
+    compacted: false
   });
 });
 
-test("ask denies every command, also plain ls, and every subagent, and adds them to deniedActions", async () => {
+test("ask reports a compaction: compacted in --json, and a note after the answer", async () => {
+  setRunReviewForTest(async () => reply({ compacted: true }));
+  const json = JSON.parse(await captureStdout(() => handleAsk(["--json"], { stdin: "research" })));
+  assert.equal(json.compacted, true);
+  const text = await captureStdout(() => handleAsk([], { stdin: "research" }));
+  assert.equal(text, "PONG\n\n[note] agy compacted the conversation during this run, so Gemini worked from a summary of the earlier steps.\n[conversation] c-1\n");
+});
+
+test("ask --file refuses a media file over the limit before the run, on the open file's size", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-media-"));
+  try {
+    for (const name of ["big.mp4", "big.PDF", "ok.mp4", "big.txt"]) {
+      const fd = fs.openSync(path.join(dir, name), "w");
+      fs.ftruncateSync(fd, name.startsWith("ok") ? MAX_MEDIA_BYTES : MAX_MEDIA_BYTES + 1);
+      fs.closeSync(fd);
+    }
+    setRunReviewForTest(async () => reply());
+    for (const name of ["big.mp4", "big.PDF"]) {
+      await assert.rejects(
+        () => handleAsk(["--file", path.join(dir, name)], { stdin: "describe" }),
+        (err) => err instanceof ConfigError && /over the 24000000-byte limit/.test(err.message) && /ffmpeg/.test(err.suggestion),
+        name
+      );
+    }
+    // At the limit, and for text of any size, the file goes through.
+    await captureStdout(() => handleAsk(["--file", path.join(dir, "ok.mp4"), "--file", path.join(dir, "big.txt")], { stdin: "describe" }));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ask --file copies .m4a as .mp4, and refuses .aac and .flac with an ffmpeg hint", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-audio-"));
+  try {
+    for (const name of ["talk.m4a", "talk.aac", "talk.FLAC"]) fs.writeFileSync(path.join(dir, name), "audio");
+    let copied;
+    setRunReviewForTest(async (args) => {
+      copied = fs.readdirSync(path.join(args.cwd, "files"));
+      return reply();
+    });
+    await captureStdout(() => handleAsk(["--file", path.join(dir, "talk.m4a")], { stdin: "transcribe" }));
+    assert.deepEqual(copied, ["1-talk.mp4"]);
+    setRunReviewForTest(async () => {
+      throw new Error("should not be called");
+    });
+    for (const name of ["talk.aac", "talk.FLAC"]) {
+      await assert.rejects(
+        () => handleAsk(["--file", path.join(dir, name)], { stdin: "transcribe" }),
+        (err) => err instanceof ConfigError && /ffmpeg -i x\.flac x\.mp3/.test(err.suggestion),
+        name
+      );
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ask --schema passes a copy of the schema to agy and prints the checked JSON", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-schema-"));
+  try {
+    const schema = {
+      type: "object",
+      required: ["number", "colour"],
+      additionalProperties: false,
+      properties: { number: { type: "integer" }, colour: { type: "string", enum: ["black", "red"] } }
+    };
+    fs.writeFileSync(path.join(dir, "s.json"), JSON.stringify(schema));
+    let seen;
+    let passed;
+    setRunReviewForTest(async (args) => {
+      seen = args;
+      passed = JSON.parse(fs.readFileSync(args.jsonSchema, "utf8"));
+      return reply({ text: '{"number":58213,"colour":"black"}', response: "58213, black" });
+    });
+    const text = await captureStdout(() => handleAsk(["--schema", path.join(dir, "s.json")], { stdin: "read the image" }));
+    assert.equal(seen.jsonSchema, path.join(seen.cwd, ".agents", "schema.json"), "the copy is where no file tool may read");
+    assert.deepEqual(passed, schema);
+    assert.equal(text, '{\n  "number": 58213,\n  "colour": "black"\n}\n\n[conversation] c-1\n');
+    const json = JSON.parse(await captureStdout(() => handleAsk(["--json", "--schema", path.join(dir, "s.json")], { stdin: "read" })));
+    assert.deepEqual(json.structuredOutput, { number: 58213, colour: "black" });
+    assert.equal(json.response, "58213, black");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ask --schema fails when the answer is empty or does not fit the schema", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-schema-"));
+  try {
+    const file = path.join(dir, "s.json");
+    fs.writeFileSync(file, JSON.stringify({ type: "object", required: ["n"], properties: { n: { type: "integer" } } }));
+    for (const [text, why] of [["", /Empty output/], ['{"n":"5"}', /expected integer/], ["{}", /missing required property "n"/], ["not json", /JSON parse failed/]]) {
+      setRunReviewForTest(async () => reply({ text, response: "prose" }));
+      await assert.rejects(
+        () => handleAsk(["--schema", file], { stdin: "q" }),
+        (err) => err instanceof OutputError && why.test(err.message) && /prose/.test(err.message),
+        text
+      );
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ask --schema refuses a schema with keywords the plugin cannot check, or bad JSON, without calling agy", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-schema-"));
+  setRunReviewForTest(async () => {
+    throw new Error("should not be called");
+  });
+  try {
+    for (const [body, why] of [
+      [JSON.stringify({ type: "object", properties: { a: { anyOf: [{ type: "string" }] } } }), /anyOf/],
+      [JSON.stringify({ type: "object", properties: { a: { type: ["string", "null"] } } }), /list of types/],
+      [JSON.stringify({ properties: { a: { type: "string" } } }), /"type": "object"/],
+      ["{not json", /not valid JSON/]
+    ]) {
+      const file = path.join(dir, "s.json");
+      fs.writeFileSync(file, body);
+      await assert.rejects(() => handleAsk(["--schema", file], { stdin: "q" }), (err) => err instanceof ConfigError && why.test(err.message), body);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ask denies every command, also plain ls, every subagent and reads outside its roots, and adds them to deniedActions", async () => {
   setRunReviewForTest(async ({ cwd }) => {
-    // Run the hook the way agy does, from the hooks.json in the temp folder.
-    const hooks = JSON.parse(fs.readFileSync(path.join(cwd, ".agents", "hooks.json"), "utf8"));
-    const { command } = hooks["gemini-plugin-command-gate"].PreToolUse[0].hooks[0];
     const calls = [
       { name: "run_command", args: { CommandLine: "ls /src" } },
       { name: "run_command", args: { CommandLine: "grep -rn x /src > /src/out.txt" } },
-      { name: "invoke_subagent", args: { Prompt: "Reply HELLO", Role: "Greeter", TypeName: "self" } }
+      { name: "invoke_subagent", args: { Prompt: "Reply HELLO", Role: "Greeter", TypeName: "self" } },
+      { name: "read_file", args: { Path: "/etc/hosts" } }
     ];
-    for (const toolCall of calls) execFileSync("sh", ["-c", command], { input: JSON.stringify({ toolCall }) });
+    for (const toolCall of calls) assert.equal(hookDecision(cwd, toolCall), "deny", toolCall.name);
     return reply({ deniedActions: [{ action: "read_url", display_name: "ReadUrl" }] });
   });
   const out = await captureStdout(() => handleAsk(["--json"], { stdin: "Search /src." }));
@@ -221,7 +365,8 @@ test("ask denies every command, also plain ls, and every subagent, and adds them
     { action: "read_url", display_name: "ReadUrl" },
     { action: "command", display_name: "ls /src" },
     { action: "command", display_name: "grep -rn x /src > /src/out.txt" },
-    { action: "invoke_subagent" }
+    { action: "invoke_subagent" },
+    { action: "read_file", display_name: "/etc/hosts" }
   ]);
 });
 
@@ -400,6 +545,54 @@ test("ask --dir adds each folder with --add-dir, lists the folders and runs from
   }
 });
 
+test("ask --dir lets the file reader read inside each folder, by folder boundary, and not through a link out of it", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-roots-"));
+  try {
+    for (const d of ["src", "src-secret", "out"]) fs.mkdirSync(path.join(root, d));
+    fs.writeFileSync(path.join(root, "src", "a.txt"), "a");
+    fs.writeFileSync(path.join(root, "src-secret", "key.txt"), "k");
+    fs.writeFileSync(path.join(root, "out", "secret.txt"), "s");
+    fs.symlinkSync(path.join(root, "out", "secret.txt"), path.join(root, "src", "link.txt"));
+    const decisions = {};
+    setRunReviewForTest(async ({ cwd }) => {
+      const read = (p) => hookDecision(cwd, { name: "read_file", args: { Path: p } });
+      const real = fs.realpathSync(root);
+      decisions.inside = read(path.join(real, "src", "a.txt"));
+      decisions.viaLink = read(path.join(real, "src", "link.txt"));
+      decisions.samePrefix = read(path.join(real, "src-secret", "key.txt"));
+      decisions.dotdot = read(path.join(real, "src", "..", "out", "secret.txt"));
+      decisions.missing = read(path.join(real, "src", "nope.txt"));
+      decisions.relative = read("src/a.txt");
+      decisions.noPath = hookDecision(cwd, { name: "read_file", args: {} });
+      return reply();
+    });
+    await captureStdout(() => handleAsk(["--dir", path.join(root, "src")], { stdin: "read a.txt" }));
+    assert.deepEqual(decisions, {
+      inside: "allow",
+      viaLink: "deny",
+      samePrefix: "deny",
+      dotdot: "deny",
+      missing: "deny",
+      relative: "deny",
+      noPath: "deny"
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ask --dir with the home folder still denies agy's own folder, with its sign-in token and saved conversations", async () => {
+  const agyHome = path.join(os.homedir(), ".gemini", "antigravity-cli");
+  let decision;
+  setRunReviewForTest(async ({ cwd }) => {
+    decision = hookDecision(cwd, { name: "read_file", args: { Path: agyHome } });
+    return reply();
+  });
+  await captureStdout(() => handleAsk(["--dir", os.homedir()], { stdin: "hi" }));
+  // A missing folder is denied too, so this holds on a machine without agy.
+  assert.equal(decision, "deny");
+});
+
 test("ask --dir accepts / and the home folder, and folders that share only /", async () => {
   const seen = [];
   setRunReviewForTest(async (args) => {
@@ -424,7 +617,7 @@ test("ask --dir and --file work together", async () => {
     let copied;
     setRunReviewForTest(async (args) => {
       seen = args;
-      copied = fs.readdirSync(args.cwd).filter((n) => n !== ".agents");
+      copied = fs.readdirSync(path.join(args.cwd, "files"));
       return reply();
     });
     await captureStdout(() => handleAsk(["--dir", dir, "--file", path.join(dir, "a.txt")], { stdin: "hi" }));
@@ -437,19 +630,19 @@ test("ask --dir and --file work together", async () => {
   }
 });
 
-test("ask --dir fails before the run on an agy older than 1.4.2 or with no version", async () => {
+test("ask --dir fails before the run on an agy older than 1.4.3 or with no version", async () => {
   setRunReviewForTest(async () => {
     throw new Error("should not be called");
   });
-  for (const detail of ["1.4.1", "1.3.6", "agy not found on PATH"]) {
+  for (const detail of ["1.4.2", "1.3.6", "agy not found on PATH"]) {
     useAgyVersion(detail);
     await assert.rejects(
       () => handleAsk(["--dir", os.tmpdir()], { stdin: "hi" }),
-      (err) => err instanceof ConfigError && /needs agy 1\.4\.2 or later/.test(err.message) && /agy update/.test(err.suggestion),
+      (err) => err instanceof ConfigError && /needs agy 1\.4\.3 or later/.test(err.message) && /agy update/.test(err.suggestion),
       detail
     );
   }
-  for (const detail of ["1.4.2", "1.5.0", "2.0.0"]) {
+  for (const detail of ["1.4.3", "1.5.0", "2.0.0"]) {
     useAgyVersion(detail);
     setRunReviewForTest(async () => reply());
     await captureStdout(() => handleAsk(["--dir", os.tmpdir()], { stdin: "hi" }));
@@ -548,7 +741,7 @@ test("ask reads a path through a system link that root owns, such as /tmp on mac
     let copied;
     setRunReviewForTest(async (args) => {
       seen = args;
-      copied = fs.readFileSync(path.join(args.cwd, "1-a.txt"), "utf8");
+      copied = fs.readFileSync(path.join(args.cwd, "files", "1-a.txt"), "utf8");
       return reply();
     });
     await captureStdout(() => handleAsk(["--prompt-file", path.join(dir, "p.md"), "--file", path.join(dir, "a.txt")], { stdin: "" }));
@@ -575,6 +768,197 @@ test("ask refuses a --file or --prompt-file that is not a regular file, without 
       () => handleAsk(["--prompt-file", dir], { stdin: "" }),
       (err) => err instanceof ConfigError && /not a regular file/.test(err.message)
     );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const CONV = "9689f39d-883e-4bf0-a848-11e420bc9c7d";
+
+// A fake agy home with a brain folder for CONV, and an empty --image-out folder.
+function imageFixture() {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-image-")));
+  const brain = path.join(root, "agy", "brain", CONV);
+  fs.mkdirSync(brain, { recursive: true });
+  fs.mkdirSync(path.join(root, "out"));
+  setAgyHomeForTest(path.join(root, "agy"));
+  return { root, brain, out: path.join(root, "out") };
+}
+
+test("ask --image-out allows only the image-generator subagent, checks reference images, and uses the image tool rule", async () => {
+  const { root, out } = imageFixture();
+  try {
+    fs.writeFileSync(path.join(root, "outside.png"), "png");
+    const decisions = {};
+    let seen;
+    setRunReviewForTest(async (args) => {
+      seen = args;
+      const d = (toolCall, conversationId) => hookDecision(args.cwd, toolCall, conversationId);
+      fs.writeFileSync(path.join(args.cwd, "files", "ref.png"), "png");
+      // The subagent may answer only the conversation that started it.
+      decisions.answerBeforeStart = d({ name: "send_message", args: { Recipient: "parent-1", Message: "done" } }, "sub-1");
+      decisions.imageGenerator = d({ name: "invoke_subagent", args: { Prompt: "a cube", Role: "r", TypeName: "image-generator" } });
+      decisions.listForm = d({ name: "invoke_subagent", args: { Subagents: [{ Prompt: "a", TypeName: "image-generator" }] } });
+      decisions.self = d({ name: "invoke_subagent", args: { Prompt: "a", TypeName: "self" } });
+      decisions.mixed = d({ name: "invoke_subagent", args: { Subagents: [{ TypeName: "image-generator" }, { TypeName: "self" }] } });
+      decisions.ownWorkspace = d({ name: "invoke_subagent", args: { TypeName: "image-generator", Workspace: "/" } });
+      decisions.noReference = d({ name: "generate_image", args: { Prompt: "a cube", ImageName: "cube" } });
+      decisions.refInside = d({ name: "generate_image", args: { Prompt: "a", ImagePaths: [path.join(args.cwd, "files", "ref.png")] } });
+      decisions.refOutside = d({ name: "generate_image", args: { Prompt: "a", ImagePaths: [path.join(args.cwd, "files", "ref.png"), path.join(root, "outside.png")] } });
+      decisions.answerParent = d({ name: "send_message", args: { Recipient: "parent-1", Message: "done" } }, "sub-1");
+      decisions.answerOther = d({ name: "send_message", args: { Recipient: "00000000-0000-4000-8000-000000000000", Message: "x" } }, "sub-1");
+      decisions.answerNoRecipient = d({ name: "send_message", args: { Message: "x" } }, "sub-1");
+      decisions.command = d({ name: "run_command", args: { CommandLine: "ls" } });
+      decisions.readOutside = d({ name: "view_file", args: { AbsolutePath: path.join(root, "outside.png") } });
+      return reply({ conversationId: CONV });
+    });
+    // No image was saved, so the ask fails after the checks.
+    await assert.rejects(() => handleAsk(["--image-out", out], { stdin: "draw a cube" }), (err) => err instanceof OutputError && /made no image/.test(err.message));
+    assert.ok(seen.prompt.endsWith(IMAGE_TOOL_RULE));
+    assert.deepEqual(decisions, {
+      imageGenerator: "allow",
+      listForm: "allow",
+      self: "deny",
+      mixed: "deny",
+      ownWorkspace: "deny",
+      noReference: "allow",
+      refInside: "allow",
+      refOutside: "deny",
+      answerBeforeStart: "deny",
+      answerParent: "allow",
+      answerOther: "deny",
+      answerNoRecipient: "deny",
+      command: "deny",
+      readOutside: "deny"
+    });
+  } finally {
+    setAgyHomeForTest(null);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ask --image-out copies only new regular image files of this conversation, and lists them", async () => {
+  const { root, brain, out } = imageFixture();
+  try {
+    fs.writeFileSync(path.join(root, "secret.png"), "secret");
+    fs.writeFileSync(path.join(brain, "old.png"), "old");
+    const past = new Date(Date.now() - 3_600_000);
+    fs.utimesSync(path.join(brain, "old.png"), past, past);
+    setRunReviewForTest(async () => {
+      fs.writeFileSync(path.join(brain, "cube_1.jpg"), "jpg");
+      fs.writeFileSync(path.join(brain, "empty.png"), "");
+      fs.writeFileSync(path.join(brain, "notes.md"), "md");
+      fs.symlinkSync(path.join(root, "secret.png"), path.join(brain, "link.png"));
+      return reply({ conversationId: CONV, response: "Made a cube." });
+    });
+    const json = JSON.parse(await captureStdout(() => handleAsk(["--json", "--resume", CONV, "--image-out", out], { stdin: "draw a cube" })));
+    assert.deepEqual(json.images, [path.join(out, "cube_1.jpg")]);
+    assert.deepEqual(fs.readdirSync(out), ["cube_1.jpg"]);
+    assert.equal(fs.readFileSync(path.join(out, "cube_1.jpg"), "utf8"), "jpg");
+    assert.ok(fs.existsSync(path.join(brain, "cube_1.jpg")), "agy's own folder is left alone");
+
+    // Text output lists the copies; an existing file of the same name is never overwritten.
+    setRunReviewForTest(async () => {
+      fs.writeFileSync(path.join(brain, "cube_1.jpg"), "jpg 2");
+      return reply({ conversationId: CONV, response: "Again." });
+    });
+    await assert.rejects(
+      () => handleAsk(["--resume", CONV, "--image-out", out], { stdin: "draw" }),
+      (err) => err instanceof ConfigError && /already has a file/.test(err.message)
+    );
+    assert.equal(fs.readFileSync(path.join(out, "cube_1.jpg"), "utf8"), "jpg");
+    fs.rmSync(path.join(out, "cube_1.jpg"));
+    setRunReviewForTest(async () => {
+      fs.writeFileSync(path.join(brain, "cube_1.jpg"), "jpg 3");
+      return reply({ conversationId: CONV, response: "Again." });
+    });
+    const text = await captureStdout(() => handleAsk(["--resume", CONV, "--image-out", out], { stdin: "draw" }));
+    assert.equal(text, `Again.\n\n[image] ${path.join(out, "cube_1.jpg")}\n[conversation] ${CONV}\n`);
+  } finally {
+    setAgyHomeForTest(null);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ask --image-out refuses a missing folder, a file, or a path through a user's symlink, without calling agy", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-image-")));
+  setRunReviewForTest(async () => {
+    throw new Error("should not be called");
+  });
+  try {
+    fs.mkdirSync(path.join(root, "real"));
+    fs.writeFileSync(path.join(root, "file"), "x");
+    fs.symlinkSync(path.join(root, "real"), path.join(root, "link"));
+    for (const p of [path.join(root, "missing"), path.join(root, "file"), path.join(root, "link")]) {
+      await assert.rejects(() => handleAsk(["--image-out", p], { stdin: "draw" }), ConfigError, p);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ask --image-out on a resumed conversation fails when the run made no image, also when an older one is a moment old", async () => {
+  const { root, brain, out } = imageFixture();
+  try {
+    fs.writeFileSync(path.join(brain, "earlier.png"), "png");
+    const halfSecondAgo = new Date(Date.now() - 500);
+    fs.utimesSync(path.join(brain, "earlier.png"), halfSecondAgo, halfSecondAgo);
+    setRunReviewForTest(async () => reply({ conversationId: CONV, response: "Here is your image." }));
+    await assert.rejects(
+      () => handleAsk(["--resume", CONV, "--image-out", out], { stdin: "again" }),
+      (err) => err instanceof OutputError && /made no image/.test(err.message)
+    );
+    assert.deepEqual(fs.readdirSync(out), []);
+    // A file that the run changed counts as made.
+    setRunReviewForTest(async () => {
+      fs.writeFileSync(path.join(brain, "earlier.png"), "a new png");
+      return reply({ conversationId: CONV });
+    });
+    const json = JSON.parse(await captureStdout(() => handleAsk(["--json", "--resume", CONV, "--image-out", out], { stdin: "redo" })));
+    assert.deepEqual(json.images, [path.join(out, "earlier.png")]);
+  } finally {
+    setAgyHomeForTest(null);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ask --dir denies agy's home and the run's .agents folder, also when the path is written in another case", async () => {
+  const { root } = imageFixture(); // agy home is <root>/agy
+  try {
+    fs.writeFileSync(path.join(root, "agy", "brain", CONV, "t.png"), "png");
+    const decisions = {};
+    setRunReviewForTest(async ({ cwd }) => {
+      const read = (p) => hookDecision(cwd, { name: "read_file", args: { Path: p } });
+      decisions.agyHome = read(path.join(root, "AGY", "Brain", CONV, "t.png"));
+      // The .agents folder sits inside the root when --dir is the temp folder's parent.
+      decisions.agents = read(path.join(cwd, ".AGENTS", "hooks.json"));
+      return reply();
+    });
+    await captureStdout(() => handleAsk(["--dir", root, "--dir", os.tmpdir()], { stdin: "hi" }));
+    assert.deepEqual(decisions, { agyHome: "deny", agents: "deny" });
+  } finally {
+    setAgyHomeForTest(null);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ask --schema accepts the answers false, 0, an empty string and null, and an enum of objects", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-schema-"));
+  try {
+    const file = path.join(dir, "s.json");
+    for (const [schema, text, want] of [
+      [{ type: "boolean" }, "false", false],
+      [{ type: "integer" }, "0", 0],
+      [{ type: "string" }, '""', ""],
+      [{ type: "null" }, "null", null],
+      [{ enum: [{ x: 1 }, [1, 2]] }, '{"x":1}', { x: 1 }],
+      [{ enum: [{ x: 1 }, [1, 2]] }, "[1,2]", [1, 2]]
+    ]) {
+      fs.writeFileSync(file, JSON.stringify(schema));
+      setRunReviewForTest(async () => reply({ text, response: text }));
+      const json = JSON.parse(await captureStdout(() => handleAsk(["--json", "--schema", file], { stdin: "q" })));
+      assert.deepEqual(json.structuredOutput, want, text);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

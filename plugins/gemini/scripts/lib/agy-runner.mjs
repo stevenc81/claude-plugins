@@ -1,7 +1,15 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import fs from "node:fs";
 import process from "node:process";
-import { AgyAuthError, AgyConnectionError, AgyModelError, AgyQuotaError, AgyTimeoutError, ConfigError } from "./errors.mjs";
+import {
+  AgyAuthError,
+  AgyConnectionError,
+  AgyInterruptedError,
+  AgyModelError,
+  AgyQuotaError,
+  AgyTimeoutError,
+  ConfigError
+} from "./errors.mjs";
 
 export const DEFAULT_PROMPT_TIMEOUT_MS = 1_200_000;
 // agy's own --print-timeout returns partial output with exit 0. Our wall-clock
@@ -163,7 +171,20 @@ function errorForExit({ code, signal, result, plain, stderr, model }) {
  * after the prompt. agy's usage in the last `result` covers the whole session.
  * When the session grows past agy's compaction threshold, agy replaces the
  * earlier turns with a summary (a `checkpoint` step). Gemini then no longer
- * has the whole input, so a session with parts that compacts fails too.
+ * has the whole input, so a session with parts that compacts fails too. Any
+ * run fails when an `error_message` step comes before the compaction, or when
+ * a compacted run ends with an empty answer: in October 2026, a 28 MB video
+ * gave an empty model turn, an error step and a compaction, and the model then
+ * lost the task and answered "I am ready and listening". Other runs that
+ * compact return `compacted: true`.
+ *
+ * `searches` counts the `search_web` tool steps once each: agy streams a step
+ * as ACTIVE and then as DONE or ERROR, with the same step index.
+ *
+ * On SIGTERM or SIGINT, and at the hard time limit, the runner stops the agy
+ * child and waits until it has exited (SIGKILL after a short grace time)
+ * before it rejects, so the caller removes the temp folder only after agy is
+ * gone.
  *
  * A run that hits agy's `--print-timeout` still exits 0 with partial output;
  * the stderr marker is the only reliable signal, surfaced as `timedOut`.
@@ -205,6 +226,9 @@ export function runReview({
     let sent = 0;
     let answered = 0; // result events so far, one per message
     let compacted = false;
+    let errorStep = false; // an error_message step so far
+    let lostTask = false; // an error_message step came before a compaction
+    const searchSteps = new Map(); // step key -> last state of a search_web step
 
     // stdin closes after the last message, which ends the session after its turn.
     const sendNext = () => {
@@ -223,7 +247,15 @@ export function runReview({
         plain += `${line}\n`;
         return;
       }
-      if (event?.event === "step_update" && event.step_update?.step_type === "checkpoint") compacted = true;
+      const step = event?.event === "step_update" ? event.step_update : null;
+      if (step?.step_type === "error_message") errorStep = true;
+      if (step?.step_type === "checkpoint") {
+        compacted = true;
+        if (errorStep) lostTask = true;
+      }
+      if (step?.step_type === "tool" && step.tool_name === "search_web") {
+        searchSteps.set(`${step.conversation_id}:${step.step_index}`, step.state);
+      }
       if (event?.event !== "result") return;
       result = event.result;
       answered += 1;
@@ -246,38 +278,51 @@ export function runReview({
       stderr += typeof chunk === "string" ? chunk : chunk.toString("utf8");
     });
 
+    let stopError = null; // set once the run is being stopped
+    let killTimer;
+    let giveUpTimer;
+    const onSignal = (sig) => stop(new AgyInterruptedError(`Stopped by ${sig}.`), sig);
+    const signals = ["SIGTERM", "SIGINT"];
+
     const finishWith = (cb) => {
       if (settled) return;
       settled = true;
       clearTimeout(wallTimer);
+      clearTimeout(killTimer);
+      clearTimeout(giveUpTimer);
+      for (const sig of signals) process.off(sig, onSignal);
       cb();
     };
 
-    const wallTimer = setTimeout(() => {
-      finishWith(() => {
+    // Ends the run with `err` once the child has exited. SIGKILL follows after
+    // SIGKILL_GRACE_MS, and the run rejects anyway after twice that, in case
+    // no close event ever comes.
+    const stop = (err, sig = "SIGTERM") => {
+      if (settled || stopError) return;
+      stopError = err;
+      clearTimeout(wallTimer);
+      try {
+        proc.kill?.(sig);
+      } catch {
+        /* already gone */
+      }
+      killTimer = setTimeout(() => {
         try {
-          proc.kill?.("SIGTERM");
+          proc.kill?.("SIGKILL");
         } catch {
           /* already gone */
         }
-        const killTimer = setTimeout(() => {
-          try {
-            proc.kill?.("SIGKILL");
-          } catch {
-            /* already gone */
-          }
-        }, SIGKILL_GRACE_MS);
-        killTimer.unref?.();
-        reject(
-          new AgyTimeoutError(
-            `agy did not finish within ${wallClockMs}ms.`,
-            {
-              suggestion:
-                "Retry. For consistently large prompts, raise GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS."
-            }
-          )
-        );
-      });
+      }, SIGKILL_GRACE_MS);
+      giveUpTimer = setTimeout(() => finishWith(() => reject(err)), 2 * SIGKILL_GRACE_MS);
+    };
+    for (const sig of signals) process.once(sig, onSignal);
+
+    const wallTimer = setTimeout(() => {
+      stop(
+        new AgyTimeoutError(`agy did not finish within ${wallClockMs}ms.`, {
+          suggestion: "Retry. For consistently large prompts, raise GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS."
+        })
+      );
     }, wallClockMs);
     wallTimer.unref?.();
 
@@ -307,6 +352,10 @@ export function runReview({
     // "close" comes after stdout and stderr are drained; "exit" can come before.
     proc.on?.("close", (code, signal) => {
       finishWith(() => {
+        if (stopError) {
+          reject(stopError);
+          return;
+        }
         readLine(partLine);
         if (code !== 0) {
           reject(errorForExit({ code, signal, result, plain, stderr, model }));
@@ -349,8 +398,23 @@ export function runReview({
           return;
         }
         const response = result.response;
+        // With a schema, the answer is structured_output, and the response may be empty.
+        const hasAnswer = jsonSchema ? Object.hasOwn(result, "structured_output") : response.trim() !== "";
+        if (compacted && (lostTask || !hasAnswer)) {
+          reject(
+            new AgyConnectionError(
+              `agy compacted the conversation after ${lostTask ? "an error step" : "a turn"}, and the answer ${response.trim() ? `may not fit the task: ${JSON.stringify(response).slice(0, 120)}` : "is empty"}.`,
+              {
+                suggestion:
+                  "The model most likely lost the task. A media file that is too large does this: pass a smaller or shorter file, or less text."
+              }
+            )
+          );
+          return;
+        }
         let text = response;
-        if (result.structured_output != null) {
+        // JSON null, false, 0 and "" are answers too; only a missing field is none.
+        if (Object.hasOwn(result, "structured_output")) {
           text = JSON.stringify(result.structured_output);
         } else if (jsonSchema) {
           text = "";
@@ -367,6 +431,11 @@ export function runReview({
           deniedActions: Array.isArray(result.denied_actions) ? result.denied_actions : [],
           timedOut,
           conversationId: result.conversation_id,
+          compacted,
+          searches: {
+            attempted: searchSteps.size,
+            succeeded: [...searchSteps.values()].filter((state) => state === "DONE").length
+          },
           agentVersion
         });
       });

@@ -53,7 +53,8 @@ export function renderReviewResult({
   requestedModel = null,
   fallbackReason = null,
   deniedActions = [],
-  timedOut = false
+  timedOut = false,
+  searches = null
 }) {
   const labelParts = [];
   if (target?.inputBytes != null) labelParts.push(`${target.inputBytes} bytes`);
@@ -140,15 +141,13 @@ export function renderReviewResult({
   }
 
   const sourceCount = countClaimSources(parsed);
+  const searchText = searches
+    ? `${searches.attempted} web search${searches.attempted === 1 ? "" : "es"} run, ${searches.succeeded} succeeded. `
+    : "";
   if (sourceCount > 0) {
-    lines.push(
-      `[grounding] ${sourceCount} source URL${sourceCount === 1 ? "" : "s"} cited. ` +
-        "The plugin does not count tool calls; rely on claim sources for evidence."
-    );
+    lines.push(`[grounding] ${searchText}${sourceCount} source URL${sourceCount === 1 ? "" : "s"} cited.`);
   } else {
-    lines.push(
-      "[grounding] No claim sources cited, and the plugin does not count tool calls. Treat results as ungrounded."
-    );
+    lines.push(`[grounding] ${searchText}No claim sources cited. Treat results as ungrounded.`);
   }
   if (refused) lines.push(`[grounding] agy refused these tools: ${refused}.`);
 
@@ -199,13 +198,17 @@ function formatQuota(quota) {
 }
 
 // The last line names the conversation, which `ask --resume <id>` continues.
-export function renderAskResult({ response, deniedActions = [], timedOut = false, conversationId = null }) {
+export function renderAskResult({ response, deniedActions = [], timedOut = false, compacted = false, conversationId = null, images = [] }) {
   const text = String(response ?? "");
   const notes = [];
   if (!text.trim()) notes.push("[note] The model returned no text.");
   const refused = describeDeniedActions(deniedActions);
   if (refused) notes.push(`[note] agy refused these tools: ${refused}.`);
   if (timedOut) notes.push("[note] agy hit its time limit, so this answer was cut off.");
+  if (compacted) {
+    notes.push("[note] agy compacted the conversation during this run, so Gemini worked from a summary of the earlier steps.");
+  }
+  for (const image of images) notes.push(`[image] ${image}`);
   if (conversationId) notes.push(`[conversation] ${conversationId}`);
   if (notes.length === 0) return text;
   const body = text && !text.endsWith("\n") ? `${text}\n` : text;

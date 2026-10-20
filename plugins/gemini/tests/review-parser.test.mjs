@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   parseStructuredOutput,
   parseReviewOutput,
+  parseAgainstSchema,
   internals
 } from "../scripts/lib/output-parser.mjs";
 
@@ -172,4 +173,20 @@ test("stripFences handles json tag", () => {
 
 test("stripFences handles bare backticks", () => {
   assert.equal(internals.stripFences("```\n{}\n```"), "{}");
+});
+
+test("enum compares objects and arrays by value, not by identity", () => {
+  const schema = { enum: [{ x: 1, y: [2] }, [1, 2], "a"] };
+  for (const ok of ['{"y":[2],"x":1}', "[1,2]", '"a"']) assert.equal(parseAgainstSchema(ok, schema).parseError, null, ok);
+  for (const bad of ['{"x":1}', '{"x":1,"y":[2],"z":0}', "[2,1]", '"b"', "1"]) {
+    assert.match(parseAgainstSchema(bad, schema).parseError, /expected one of/, bad);
+  }
+});
+
+test("required and properties count only the object's own keys, not inherited ones", () => {
+  const schema = { type: "object", required: ["constructor", "toString"], properties: { constructor: { type: "string" } } };
+  assert.match(parseAgainstSchema("{}", schema).parseError, /missing required property "constructor"/);
+  assert.match(parseAgainstSchema("{}", schema).parseError, /missing required property "toString"/);
+  assert.equal(parseAgainstSchema('{"constructor":"c","toString":1}', schema).parseError, null);
+  assert.match(parseAgainstSchema('{"constructor":1,"toString":1}', schema).parseError, /constructor: expected string/);
 });
