@@ -97,7 +97,8 @@ A teammate starts with no context. Start every teammate prompt with this brief:
 - Claude: the Agent tool. Set both `model` (`opus`, `sonnet`, `haiku` or `fable`) and `effort` (low, medium, high, xhigh, max).
 - Codex, one job: `codex exec --skip-git-repo-check -C <project> -s <sandbox> -m <model> -c model_reasoning_effort=<effort> - < <temp>/prompt-<job>.md > <temp>/<job>.md`. The efforts are low, medium, high, xhigh, max and ultra.
   - Write the prompt to `<temp>/prompt-<job>.md` first. Never put the prompt in the command line: quotes, `$(...)` or backticks in it would run in the shell.
-  - Use `-s read-only` for reviews, research and checks. Use `-s workspace-write` only for a job that must change files. Then Codex can write inside the `-C` folder and in `<temp>`.
+  - Use `-s read-only` for reviews, research and checks that only read. In read-only, commands cannot write anywhere, not even `$TMPDIR`. So code that saves output, charts or caches fails. Use `-s workspace-write` for a job that runs such code or must change files. Then Codex can write inside the `-C` folder and in `<temp>`.
+  - Codex commands have no network in either sandbox, so `curl` and `pip install` fail. If a job must download data or packages, add `-c sandbox_workspace_write.network_access=true` to `-s workspace-write`.
   - In both sandboxes, Codex can read any file on the disk. `-C` sets only its working folder.
   - Without `--skip-git-repo-check`, Codex refuses to start in a folder that is not a git repo.
   - For web search, put `--search` before `exec`: `codex --search exec ...`.
