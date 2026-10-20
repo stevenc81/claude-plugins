@@ -10,7 +10,8 @@ import {
   setBinaryAvailableForTest,
   DEFAULT_ASK_MODEL,
   ASK_TOOL_RULE,
-  ASK_DIR_TOOL_RULE
+  ASK_DIR_TOOL_RULE,
+  GATED_TOOLS
 } from "../scripts/gemini-companion.mjs";
 import { ConfigError, AgyModelError } from "../scripts/lib/errors.mjs";
 import { execFileSync } from "node:child_process";
@@ -38,6 +39,7 @@ function reply(fields = {}) {
     tokens: { input_tokens: 11828, output_tokens: 2, total_tokens: 11830 },
     deniedActions: [],
     timedOut: false,
+    conversationId: "c-1",
     agentVersion: null,
     ...fields
   };
@@ -71,18 +73,25 @@ test("ask uses the default model, runs from a fresh temp folder and removes it",
     assert.ok(fs.existsSync(args.cwd), "temp folder exists while agy runs");
     const hooks = JSON.parse(fs.readFileSync(path.join(args.cwd, ".agents", "hooks.json"), "utf8"));
     const [group] = hooks["gemini-plugin-command-gate"].PreToolUse;
-    assert.equal(group.matcher, "run_command");
-    assert.equal(group.hooks[0].command.split("' '").length, 3, "node, the gate and the log");
+    assert.equal(group.matcher, GATED_TOOLS);
+    for (const tool of ["run_command", "invoke_subagent", "define_subagent", "manage_subagents", "browser_subagent", "schedule"]) {
+      assert.match(tool, new RegExp(group.matcher), tool);
+    }
+    for (const tool of ["search_web", "read_file", "read_url_content", "send_command_input", "run_command_x"]) {
+      assert.doesNotMatch(tool, new RegExp(group.matcher), tool);
+    }
+    assert.equal(group.hooks[0].command.split("' '").length, 3, "node, the gate and the log; commands allowed");
     assert.match(group.hooks[0].command, /\/scripts\/command-gate\.mjs' '.+\/\.agents\/denied\.jsonl'$/);
     return reply();
   });
   const out = await captureStdout(() => handleAsk([], { stdin: "Reply with PONG." }));
-  assert.equal(out, "PONG\n");
+  assert.equal(out, "PONG\n\n[conversation] c-1\n");
   assert.equal(seen.model, DEFAULT_ASK_MODEL);
   assert.equal(DEFAULT_ASK_MODEL, "gemini-3.8-flash-medium");
   assert.equal(seen.prompt, `Reply with PONG.\n\n${ASK_TOOL_RULE}`);
   assert.equal(seen.addDirs, undefined);
   assert.equal(seen.jsonSchema, undefined);
+  assert.equal(seen.conversationId, undefined);
   assert.equal(path.dirname(seen.cwd), path.resolve(os.tmpdir()));
   assert.match(path.basename(seen.cwd), /^gemini-ask-cwd-/);
   assert.equal(fs.existsSync(seen.cwd), false, "temp folder is removed afterwards");
@@ -188,14 +197,15 @@ test("ask returns the response verbatim and adds notes for refused tools and tim
 
   setRunReviewForTest(async () => reply({ text: "Half an ans", response: "Half an ans", timedOut: true }));
   const cut = await captureStdout(() => handleAsk([], { stdin: "essay" }));
-  assert.equal(cut, "Half an ans\n\n[note] agy hit its time limit, so this answer was cut off.\n");
+  assert.equal(cut, "Half an ans\n\n[note] agy hit its time limit, so this answer was cut off.\n[conversation] c-1\n");
 });
 
-test("ask --json returns model, response, tokens, deniedActions and timedOut", async () => {
+test("ask --json returns model, conversationId, response, tokens, deniedActions and timedOut", async () => {
   setRunReviewForTest(async () => reply());
   const out = await captureStdout(() => handleAsk(["--json"], { stdin: "Reply with PONG." }));
   assert.deepEqual(JSON.parse(out), {
     model: DEFAULT_ASK_MODEL,
+    conversationId: "c-1",
     response: "PONG\n",
     tokens: { input_tokens: 11828, output_tokens: 2, total_tokens: 11830 },
     deniedActions: [],
@@ -203,20 +213,24 @@ test("ask --json returns model, response, tokens, deniedActions and timedOut", a
   });
 });
 
-test("ask adds the commands that the hook denied to deniedActions", async () => {
+test("ask adds the commands and subagents that the hook denied to deniedActions", async () => {
   setRunReviewForTest(async ({ cwd }) => {
     // Run the hook the way agy does, from the hooks.json in the temp folder.
     const hooks = JSON.parse(fs.readFileSync(path.join(cwd, ".agents", "hooks.json"), "utf8"));
     const { command } = hooks["gemini-plugin-command-gate"].PreToolUse[0].hooks[0];
-    for (const CommandLine of ["ls /src", "grep -rn x /src > /src/out.txt"]) {
-      execFileSync("sh", ["-c", command], { input: JSON.stringify({ toolCall: { name: "run_command", args: { CommandLine } } }) });
-    }
+    const calls = [
+      { name: "run_command", args: { CommandLine: "ls /src" } },
+      { name: "run_command", args: { CommandLine: "grep -rn x /src > /src/out.txt" } },
+      { name: "invoke_subagent", args: { Prompt: "Reply HELLO", Role: "Greeter", TypeName: "self" } }
+    ];
+    for (const toolCall of calls) execFileSync("sh", ["-c", command], { input: JSON.stringify({ toolCall }) });
     return reply({ deniedActions: [{ action: "read_url", display_name: "ReadUrl" }] });
   });
   const out = await captureStdout(() => handleAsk(["--json"], { stdin: "Search /src." }));
   assert.deepEqual(JSON.parse(out).deniedActions, [
     { action: "read_url", display_name: "ReadUrl" },
-    { action: "command", display_name: "grep -rn x /src > /src/out.txt" }
+    { action: "command", display_name: "grep -rn x /src > /src/out.txt" },
+    { action: "invoke_subagent" }
   ]);
 });
 
@@ -232,16 +246,75 @@ test("ask --timeout-ms sets the prompt timeout", async () => {
   await assert.rejects(() => handleAsk(["--timeout-ms", "0"], { stdin: "hi" }), ConfigError);
 });
 
-test("ask rejects a prompt over 100,000 bytes and points at --file", async () => {
+test("ask takes a full prompt of up to 190,000 bytes, past the old 128 KiB argv limit, and rejects a larger one", async () => {
+  let sent;
+  setRunReviewForTest(async (args) => {
+    sent = args.prompt;
+    return reply();
+  });
+  await captureStdout(() => handleAsk([], { stdin: "x".repeat(189_000) }));
+  assert.ok(Buffer.byteLength(sent) > 189_000 && Buffer.byteLength(sent) <= 190_000);
+
   setRunReviewForTest(async () => {
     throw new Error("should not be called");
   });
   await assert.rejects(
-    () => handleAsk([], { stdin: "x".repeat(100_001) }),
-    (err) => err instanceof ConfigError && /100000/.test(err.message) && /--file/.test(err.suggestion)
+    () => handleAsk([], { stdin: "x".repeat(190_000) }),
+    (err) => err instanceof ConfigError && /190000/.test(err.message) && /192,000 bytes/.test(err.suggestion) && /--file/.test(err.suggestion)
   );
-  setRunReviewForTest(async () => reply());
-  await captureStdout(() => handleAsk([], { stdin: "x".repeat(100_000) }));
+});
+
+test("ask --prompt-file reads the prompt from a file, after any argument text, and does not read stdin", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-prompt-file-"));
+  try {
+    fs.writeFileSync(path.join(dir, "prompt.md"), "Line one.\nIt's \"quoted\" and has $(no) expansion.\n");
+    let prompt;
+    setRunReviewForTest(async (args) => {
+      prompt = args.prompt;
+      return reply();
+    });
+    await captureStdout(() =>
+      handleAsk(["--cwd", dir, "--prompt-file", "prompt.md", "Summarize:"], { stdin: "stdin text is not read" })
+    );
+    assert.equal(prompt, `Summarize:\n\nLine one.\nIt's "quoted" and has $(no) expansion.\n\n${ASK_TOOL_RULE}`);
+    // After --, text that starts with -- is prompt text, not a flag.
+    await captureStdout(() => handleAsk(["--prompt-file", path.join(dir, "prompt.md"), "--", "--help means what?"], { stdin: "" }));
+    assert.ok(prompt.startsWith("--help means what?\n\nLine one."), prompt.slice(0, 40));
+
+    setRunReviewForTest(async () => {
+      throw new Error("should not be called");
+    });
+    await assert.rejects(
+      () => handleAsk(["--prompt-file", path.join(dir, "missing.md")], { stdin: "hi" }),
+      (err) => err instanceof ConfigError && /Prompt file not found/.test(err.message)
+    );
+    fs.writeFileSync(path.join(dir, "empty.md"), " \n");
+    await assert.rejects(() => handleAsk(["--prompt-file", path.join(dir, "empty.md")], { stdin: "hi" }), ConfigError);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ask --resume passes the conversation ID to agy and prints it", async () => {
+  let seen;
+  setRunReviewForTest(async (args) => {
+    seen = args;
+    return reply({ conversationId: "3c758fbe-ecb4-4d7b-a9f9-94bda6aad668", response: "PLUM\n" });
+  });
+  const out = await captureStdout(() =>
+    handleAsk(["--resume", "3c758fbe-ecb4-4d7b-a9f9-94bda6aad668"], { stdin: "Which word?" })
+  );
+  assert.equal(seen.conversationId, "3c758fbe-ecb4-4d7b-a9f9-94bda6aad668");
+  assert.equal(out, "PLUM\n\n[conversation] 3c758fbe-ecb4-4d7b-a9f9-94bda6aad668\n");
+});
+
+test("ask --resume fails, and drops the answer, when agy started a new conversation instead", async () => {
+  // agy 1.4.3 only warns on stderr for an unknown ID and answers in a new conversation (build test b7).
+  setRunReviewForTest(async () => reply({ conversationId: "0a4b54d6-0fa9-4430-bc69-5e3d806ab810", response: "OK.\n" }));
+  await assert.rejects(
+    () => handleAsk(["--resume", "00000000-0000-4000-8000-000000000000"], { stdin: "hi" }),
+    (err) => err instanceof ConfigError && /no conversation "00000000-0000-4000-8000-000000000000"/.test(err.message)
+  );
 });
 
 test("ask --dir adds each folder with --add-dir, lists the folders and runs from a fresh temp folder", async () => {
@@ -373,7 +446,7 @@ test("ask --dir rejects a missing folder without calling agy", async () => {
   );
 });
 
-test("ask rejects a full prompt over the argv limit, also when only the folder list makes it too long", async () => {
+test("ask rejects a full prompt over the cap, also when only the folder list makes it too long", async () => {
   const settings = useAgySettings(["command(ls)", "command(grep)"]);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-dir-"));
   try {
@@ -384,8 +457,8 @@ test("ask rejects a full prompt over the argv limit, also when only the folder l
       throw new Error("should not be called");
     });
     await assert.rejects(
-      () => handleAsk(dirs.flatMap((d) => ["--dir", d]), { stdin: "x".repeat(60_000) }),
-      (err) => err instanceof ConfigError && /folder lists/.test(err.message) && /fewer/.test(err.suggestion)
+      () => handleAsk(dirs.flatMap((d) => ["--dir", d]), { stdin: "x".repeat(150_000) }),
+      (err) => err instanceof ConfigError && /folder lists/.test(err.message) && /190000/.test(err.message)
     );
     // The temp folder is still removed after the error.
     const left = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith("gemini-ask-cwd-"));

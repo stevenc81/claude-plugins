@@ -7,8 +7,8 @@
  * Pipes a short synthetic "assistant response" to the review subcommand and
  * verifies the agent returns a structured response with at least one
  * non-supported verdict (we seed a known-false claim so the reviewer should
- * flag it) AND at least one claim cites a source URL. agy does not report tool
- * calls, so claim sources are the grounding signal. Refused tools and timeouts
+ * flag it) AND at least one claim cites a source URL. The plugin does not count
+ * tool calls, so claim sources are the grounding signal. Refused tools and timeouts
  * are printed when present.
  *
  * Usage: node tests/smoke-review.mjs

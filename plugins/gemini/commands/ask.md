@@ -1,11 +1,11 @@
 ---
 description: Send a prompt to a Gemini model via Antigravity CLI and return its answer
-argument-hint: '[--model <id>] [--file <path>]... [--dir <folder>]... [--json] [--background] <prompt>'
+argument-hint: '[--model <id>] [--file <path>]... [--dir <folder>]... [--prompt-file <path>] [--resume <conversation-id>] [--json] [--background] <prompt>'
 disable-model-invocation: false
 allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" *)
 ---
 
-Send a prompt to a model through `agy --print` (Antigravity CLI) and return its answer.
+Send a prompt to a model through headless `agy` (Antigravity CLI) and return its answer.
 
 Raw slash-command arguments:
 `$ARGUMENTS`
@@ -15,16 +15,19 @@ Core constraint:
 - Do not answer the prompt yourself, edit files, or act on the answer.
 
 Input handling:
-- Split the raw arguments into flags and the prompt. Flags are `--model <id>`, `--file <path>` (may repeat), `--dir <folder>` (may repeat), `--json` and `--background`. Everything else is the prompt.
+- Split the raw arguments into flags and the prompt. Flags are `--model <id>`, `--file <path>` (may repeat), `--dir <folder>` (may repeat), `--prompt-file <path>`, `--resume <conversation-id>`, `--json` and `--background`. Everything else is the prompt.
 - `--model` takes any model ID from `agy models`. The default is `gemini-3.8-flash-medium`.
 - `--dir` gives Gemini read access to a folder, such as a source tree. Gemini can list it with `ls` and search it with `grep`. It may repeat, and the folders can be anywhere. Use it instead of `--file` when there are many files. `--dir` and `--file` can be used together.
-- If there is no prompt, stop and tell the user: "Nothing to ask. Add a prompt after /gemini:ask."
+- `--prompt-file <path>` reads the prompt from that file. Prompt text in the arguments goes before the file's text.
+- `--resume <conversation-id>` continues an earlier ask. Each answer ends with a `[conversation] <id>` line. Pass `--file` and `--dir` again on each turn: the plugin deletes its copies after each ask.
+- If there is no prompt and no `--prompt-file`, stop and tell the user: "Nothing to ask. Add a prompt after /gemini:ask."
 
 Building the command:
 - Do not paste `$ARGUMENTS` into the shell command. Build the arguments yourself.
-- Pass `--json`, `--model <id>`, each `--dir <folder>` and each `--file <path>` as their own arguments. Leave out any flag the user did not give, and leave out `--background`.
+- Pass `--json`, `--model <id>`, `--prompt-file <path>`, `--resume <conversation-id>`, each `--dir <folder>` and each `--file <path>` as their own arguments. Leave out any flag the user did not give, and leave out `--background`.
 - Single-quote each value, writing each `'` inside it as `'\''`. Example: `--file '/Users/me/Bob'\''s notes.md'`.
-- Pass the prompt verbatim via stdin using a quoted heredoc. Do not paraphrase it.
+- With `--prompt-file`, use no heredoc. Pass any other prompt text as one single-quoted argument after the flags and a `--` argument, so text that starts with `--` is not read as a flag. Example: `--prompt-file '/tmp/prompt.md' -- '--help means what here?'`.
+- Otherwise, pass the prompt verbatim via stdin using a quoted heredoc. Do not paraphrase it.
 - Make a new heredoc end marker for each call: `GEMINI_EOF_` and 8 random capital letters or digits. Never reuse the marker from the examples. If a line of the prompt equals the marker, make a new one. A line that equals the marker ends the input early, and the shell runs the lines after it as commands.
 
 Execution mode rules:

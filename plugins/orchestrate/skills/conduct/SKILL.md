@@ -107,10 +107,11 @@ A teammate starts with no context. Start every teammate prompt with this brief:
 - Codex, a job with follow-ups: the `codex:codex-rescue` agent with `--model <model> --effort <effort>`, so the conversation can be resumed. Add `--write` only for a job that must change files.
 - Gemini model IDs include the effort: `gemini-4-argon-<effort>` or `gemini-3.8-flash-<effort>`, with low, medium or high.
 - Gemini fact check: `/gemini:review --model gemini-4-argon-high [focus]`. Always pass `--model`: an older plugin version in a session can default to Flash.
-- Gemini, other jobs: `/gemini:ask --model <id> '<prompt>'`.
+- Gemini, other jobs: write the prompt to `<temp>/prompt-<job>.md` first. Then run `/gemini:ask --model <id> --prompt-file <temp>/prompt-<job>.md`. This is the same pattern as for Codex.
   - Always pass `--model`. Without it, the plugin uses `gemini-3.8-flash-medium`.
   - Pass files, images, audio or video with `--file <path>`. Pass a source folder with `--dir <folder>`, which can repeat. The folders can be anywhere. Gemini's file tool reads only inside them. Gemini lists and searches with `ls` and `grep`, which can reach any path, so the plugin's prompt tells it to stay inside.
-  - Keep the prompt under 100 KB. Put larger inputs in a file.
+  - The plugin refuses a prompt over 190,000 bytes, because `agy` cuts it. The cap covers the whole prompt that the plugin builds: the prompt file, the file and folder lists, and a tool rule of about 280 bytes (460 with `--dir`). So keep the prompt file a few KB below 190,000 bytes. Pass larger inputs with `--file`, which Gemini reads in parts.
+  - For a Gemini job with follow-ups, pass `--resume <conversation-id>`. Take the ID from the `[conversation]` line of the last answer. Attach the files and folders again on each turn.
   - Use `--background` for research or large `--dir` jobs. A run in the foreground stops after 9 minutes.
   - The plugin README has the full rules, including how to let Gemini open web pages.
 

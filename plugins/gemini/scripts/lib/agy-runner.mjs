@@ -63,14 +63,17 @@ function findAgyErrorLine(stderr) {
   return String(stderr ?? "").match(/^AGY_ERROR:\s*(\{.*\})\s*$/m)?.[1] ?? null;
 }
 
-function parseJsonResult(stdout) {
-  try {
-    const parsed = JSON.parse(stdout.trim());
-    if (parsed && typeof parsed === "object") return parsed;
-  } catch {
-    /* not JSON; fall through */
-  }
-  return { response: stdout };
+// A usable `result` event payload: an object with a string response and a
+// conversation ID. Anything else means agy changed its output.
+function isValidResult(result) {
+  return (
+    result != null &&
+    typeof result === "object" &&
+    !Array.isArray(result) &&
+    typeof result.response === "string" &&
+    typeof result.conversation_id === "string" &&
+    result.conversation_id !== ""
+  );
 }
 
 function quotaError(detail, model) {
@@ -79,7 +82,7 @@ function quotaError(detail, model) {
   });
 }
 
-function errorForExit({ code, signal, stdout, stderr, model }) {
+function errorForExit({ code, signal, result, plain, stderr, model }) {
   const agyError = findAgyErrorLine(stderr);
   if (agyError) {
     if (/UNAUTHENTICATED/.test(agyError)) {
@@ -93,8 +96,8 @@ function errorForExit({ code, signal, stdout, stderr, model }) {
     });
   }
 
-  const detail =
-    stderr.trim() || parseJsonResult(stdout).error || stdout.trim() || `exit ${code ?? signal}`;
+  const resultError = typeof result?.error === "string" ? result.error : "";
+  const detail = stderr.trim() || resultError || plain.trim() || `exit ${code ?? signal}`;
   // The unknown-model text lists display names such as "Gemini 3.1 Pro", so it
   // must be matched before the auth word list below.
   if (UNKNOWN_MODEL_MARKER.test(detail)) {
@@ -108,7 +111,7 @@ function errorForExit({ code, signal, stdout, stderr, model }) {
       suggestion: "Run `agy -p hello` once interactively to complete OAuth, then retry."
     });
   }
-  return new AgyConnectionError(`agy --print failed (${code ?? signal}): ${detail}`, {
+  return new AgyConnectionError(`agy failed (${code ?? signal}): ${detail}`, {
     suggestion:
       "Verify `agy --version` works and you are signed in. Rerun with GEMINI_PLUGIN_CC_DEBUG=1 for details."
   });
@@ -116,16 +119,20 @@ function errorForExit({ code, signal, stdout, stderr, model }) {
 
 /**
  * Run a single prompt through the Antigravity CLI in print mode and return the
- * parsed JSON result. The prompt travels as `--print=<prompt>` (agy ignores
- * stdin in print mode). All flags use the `--flag=value` form so Go's flag
- * parser can never consume a neighbouring flag as a value.
+ * parsed result. The prompt travels on stdin as one stream-json `user`
+ * message, so it is not in argv: `ps` cannot see it, and no argv size limit
+ * applies. stdin is then closed, which ends the session after that one turn.
+ * All flags use the `--flag=value` form so Go's flag parser can never consume
+ * a neighbouring flag as a value.
  *
- * `--output-format=json` gives us usage and refused tools. When `jsonSchema`
- * is set, `text` is the serialized `structured_output`; agy's `response` can
+ * agy writes one JSON event per line. The last `result` event holds the
+ * answer, usage, refused tools and the conversation ID. When `jsonSchema` is
+ * set, `text` is the serialized `structured_output`; agy's `response` can
  * carry stray keys in that mode, so it is only returned as `response` for
  * display. `--disable-slash-commands` keeps a prompt that starts with `/` from
  * being run as a local agy command. Each `addDirs` entry becomes `--add-dir`,
- * which lets agy's file tool read that folder.
+ * which lets agy's file tool read that folder. `conversationId` continues an
+ * earlier conversation with `--conversation`.
  *
  * A run that hits agy's `--print-timeout` still exits 0 with partial output;
  * the stderr marker is the only reliable signal, surfaced as `timedOut`.
@@ -138,6 +145,7 @@ export function runReview({
   model = null,
   jsonSchema = null,
   addDirs = [],
+  conversationId = null,
   spawnFn = nodeSpawn
 } = {}) {
   if (!prompt) {
@@ -147,22 +155,40 @@ export function runReview({
   const args = [];
   if (model) args.push(`--model=${model}`);
   for (const dir of addDirs) args.push(`--add-dir=${dir}`);
-  args.push("--output-format=json", "--disable-slash-commands");
+  if (conversationId) args.push(`--conversation=${conversationId}`);
+  args.push("--input-format=stream-json", "--output-format=stream-json", "--disable-slash-commands");
   if (jsonSchema) args.push(`--json-schema=${jsonSchema}`);
-  args.push(`--print=${prompt}`, `--print-timeout=${secondsForGoDuration(promptTimeoutMs)}`);
-  const proc = spawnFn("agy", args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  args.push(`--print-timeout=${secondsForGoDuration(promptTimeoutMs)}`);
+  const proc = spawnFn("agy", args, { cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
   const wallClockMs = promptTimeoutMs + WALL_CLOCK_GRACE_MS;
 
   return new Promise((resolve, reject) => {
     let settled = false;
-    let stdout = "";
+    let result; // the payload of the last `result` event, not yet checked
+    let plain = ""; // stdout lines that are not JSON, for error messages
+    let partLine = ""; // the end of stdout that has no newline yet
     let stderr = "";
+
+    const readLine = (line) => {
+      if (!line.trim()) return;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        plain += `${line}\n`;
+        return;
+      }
+      if (event?.event === "result") result = event.result;
+    };
 
     proc.stdout?.setEncoding?.("utf8");
     proc.stderr?.setEncoding?.("utf8");
 
+    // A chunk can end inside an event, or hold several events.
     proc.stdout?.on("data", (chunk) => {
-      stdout += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      const lines = (partLine + (typeof chunk === "string" ? chunk : chunk.toString("utf8"))).split("\n");
+      partLine = lines.pop();
+      lines.forEach(readLine);
     });
     proc.stderr?.on("data", (chunk) => {
       stderr += typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -192,7 +218,7 @@ export function runReview({
         killTimer.unref?.();
         reject(
           new AgyTimeoutError(
-            `agy --print did not finish within ${wallClockMs}ms.`,
+            `agy did not finish within ${wallClockMs}ms.`,
             {
               suggestion:
                 "Retry. For consistently large prompts, raise GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS."
@@ -226,14 +252,26 @@ export function runReview({
       });
     });
 
-    proc.on?.("exit", (code, signal) => {
+    // "close" comes after stdout and stderr are drained; "exit" can come before.
+    proc.on?.("close", (code, signal) => {
       finishWith(() => {
+        readLine(partLine);
         if (code !== 0) {
-          reject(errorForExit({ code, signal, stdout, stderr, model }));
+          reject(errorForExit({ code, signal, result, plain, stderr, model }));
           return;
         }
-        const result = parseJsonResult(stdout);
-        const response = typeof result.response === "string" ? result.response : "";
+        if (!isValidResult(result)) {
+          const got = result === undefined ? "" : ` (got ${JSON.stringify(result).slice(0, 200)})`;
+          const detail = stderr.trim() || plain.trim() || "no output";
+          reject(
+            new AgyConnectionError(`agy exited without a valid result${got}: ${detail}`, {
+              suggestion:
+                "The agy command line may have changed. Compare `agy --help` with the flags in scripts/lib/agy-runner.mjs."
+            })
+          );
+          return;
+        }
+        const response = result.response;
         let text = response;
         if (result.structured_output != null) {
           text = JSON.stringify(result.structured_output);
@@ -251,9 +289,16 @@ export function runReview({
           tokens: usage && usage.total_tokens > 0 ? usage : null,
           deniedActions: Array.isArray(result.denied_actions) ? result.denied_actions : [],
           timedOut,
+          conversationId: result.conversation_id,
           agentVersion
         });
       });
     });
+
+    // A child that exits before it reads its input (a failed start) closes the
+    // pipe, and the write fails with EPIPE. The exit code and stderr explain
+    // that failure, so the write error itself is ignored.
+    proc.stdin?.on?.("error", () => {});
+    proc.stdin?.end?.(JSON.stringify({ event: "user", message: { role: "user", content: prompt } }) + "\n");
   });
 }

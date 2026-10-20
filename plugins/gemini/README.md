@@ -2,7 +2,7 @@
 
 Use the Antigravity CLI (`agy`) from inside Claude Code to fact-check with live web grounding. This plugin is for Claude Code users who want a second-opinion reviewer that goes to the live web (not just training data) to verify claims made in a conversation.
 
-> **Heads up:** This plugin previously spawned `gemini --acp` and spoke ACP (JSON-RPC) over stdio. Google retired Gemini CLI for free/Pro/Ultra users on June 18, 2026 and replaced it with [Antigravity CLI](https://antigravity.google) (`agy`), built in Go. This plugin now runs `agy --print` and reads its JSON output. The slash commands carry over. See [Migration notes](#migration-notes-gemini-cli--antigravity-cli) below.
+> **Heads up:** This plugin previously spawned `gemini --acp` and spoke ACP (JSON-RPC) over stdio. Google retired Gemini CLI for free/Pro/Ultra users on June 18, 2026 and replaced it with [Antigravity CLI](https://antigravity.google) (`agy`), built in Go. This plugin now runs `agy` in print mode and reads its stream-json output. The slash commands carry over. See [Migration notes](#migration-notes-gemini-cli--antigravity-cli) below.
 
 ## Goal
 
@@ -16,7 +16,7 @@ This plugin has one goal: to work reliably when Claude Code agents call it durin
 
 ## Requirements
 
-- **Antigravity CLI** 1.3.x or later (`agy --version` must work). The plugin relies on `--output-format=json`, `--json-schema` and `--disable-slash-commands`. See https://antigravity.google
+- **Antigravity CLI** (`agy --version` must work). Tested on 1.4.3. The plugin relies on `--input-format=stream-json`, `--output-format=stream-json`, `--json-schema`, `--conversation` and `--disable-slash-commands`. I have not checked which older versions have them. An `agy` without one of them exits 2 with `flags provided but not defined`. Then run `agy update`. See https://antigravity.google
 - **Antigravity CLI 1.4.2 or later for `/gemini:ask --dir`.** That is the oldest version on which the command hook was tested (see [`/gemini:ask`](#geminiask)). An older `agy` could ignore the hook without a warning, so `--dir` fails before the run and tells you to run `agy update`.
 - **Sign-in.** Run `agy -p hello` once interactively. The first call opens a browser for OAuth and writes the session under `~/.gemini/antigravity-cli/`
 - **Node.js 18.18 or later**
@@ -64,8 +64,9 @@ The review always runs as a background task, and Claude Code tells you when it f
 
 How it works:
 - Claude pipes the selected text to the companion script through a quoted heredoc. No temp files, no copy and paste.
-- The companion runs `agy` in an empty temp folder with the review prompt, the JSON schema (`--json-schema`), and JSON output.
-- The prompt tells the model to use only web search. Headless `agy` refuses page fetches, file reads and commands, and a refused tool ends the run with no answer.
+- The companion runs `agy` in an empty temp folder with the review prompt on stdin and the JSON schema (`--json-schema`).
+- The prompt tells the model to use only web search. Headless `agy` refuses file reads outside its empty temp folder, and page fetches and commands that your `agy` settings do not allow. A refused tool ends the run with no answer.
+- A hook in the temp folder denies every command, also `ls` and `grep` that your `agy` settings allow, and every subagent. A web page can hold instructions for the model, so a review must never run commands. A hook denial does not end the run, and it shows in `deniedActions`.
 - Search often returns `vertexaisearch.cloud.google.com/grounding-api-redirect/...` links. The plugin resolves each one to the real page URL (one request each, in parallel, 5 seconds max). If that fails, it keeps the original link.
 - The report ends with a `[grounding]` footer. It counts the cited sources and lists any tools `agy` refused.
 - Input is capped at 40KB. Longer content is cut on a line boundary, and the report says so.
@@ -75,7 +76,7 @@ Model: reviews run on `gemini-4-argon-high` by default. `--model <id>` picks ano
 Limitations:
 - Search quality depends on what the agent finds. Niche or paywalled sources may be missed. Read `uncertain` as "search did not find it," not "it is wrong."
 - Claude picks the text to review from context. To be sure, quote or paste the exact text.
-- `agy` does not report which tools ran, so cited sources are the only sign of grounding.
+- The plugin does not count the tool calls that `agy` reports, so cited sources are the only sign of grounding.
 
 Output states:
 
@@ -100,26 +101,30 @@ Sends a prompt to a model and returns its answer exactly as the model wrote it.
 /gemini:ask --model gemini-3.8-flash-high explain this error in plain words
 /gemini:ask --file ./notes.md --file ./plan.md which plan is riskier?
 /gemini:ask --dir ./core/libs/imgqsort --dir ./core/libs/database/haar how do the blur score and duplicate search work?
+/gemini:ask --prompt-file /tmp/prompt-compare.md
+/gemini:ask --resume 3c758fbe-ecb4-4d7b-a9f9-94bda6aad668 --file ./plan.md and which step is the riskiest?
 /gemini:ask --json summarize this thread
 ```
 
 - `--model <id>` takes any ID from `agy models`. The default is `gemini-3.8-flash-medium`. An unknown ID fails with a message telling you to run `agy models`. `/gemini:ask` has no fallback model.
 - Gemini 4 Argon (`gemini-4-argon-low`, `-medium`, `-high`) uses its own weekly quota. `/gemini:review` uses the same quota, so Argon asks leave fewer Argon reviews.
-- The prompt can be up to 100,000 bytes. Pass larger input with `--file`.
-- `--file <path>` can repeat. The plugin checks that each file exists and copies it into the empty temp folder that `agy` runs in. Gemini can read those copies and nothing else from the file's folder. The prompt lists the paths of the copies.
+- The prompt can be up to 190,000 bytes, with its file and folder lists. `agy` 1.4.3 shows the model only the first 192,000 bytes of a message, counting its own wrapper of about 400 bytes. It drops the rest without an error. So the plugin stops a longer prompt before the run. Tested in October 2026 on `gemini-3.8-flash-low`: a 190,000-byte prompt arrived whole, and a 1 MB prompt was cut to its first 192,000 bytes.
+- `--prompt-file <path>` reads the prompt from a file, so a long prompt needs no heredoc. Prompt text in the arguments goes before the file's text, and stdin is not read. To make Gemini read a whole document, put the document in the prompt.
+- `--file <path>` can repeat. The plugin checks that each file exists and copies it into the empty temp folder that `agy` runs in. Gemini can read those copies and nothing else from the file's folder. The prompt lists the paths of the copies. `agy`'s file tool reads at most 800 lines or 46,080 bytes per call, so in a long file Gemini reads only the parts it looks for.
+- `--resume <conversation-id>` continues an earlier ask. Every answer ends with a `[conversation] <id>` line. The plugin deletes its file copies after each ask, so pass `--file` and `--dir` again on each turn. If `agy` has no conversation with that ID, it starts a new one without the earlier turns. The plugin then fails and does not show that answer.
 - `--dir <folder>` gives Gemini read access to a folder, such as a source tree. It can repeat, and the folders can be anywhere, also `/` or your home folder. The caller chooses them. The plugin passes each folder to `agy` as `--add-dir`, and the prompt lists the folders. Gemini's file tool can read only these folders. `ls` and `grep` can reach any path, so only the prompt keeps them inside these folders. `agy` has no tool to list or search a folder, so the prompt tells Gemini to use `ls` and `grep -rn`. That needs two rules in your `agy` settings (see below). Without them, `--dir` fails before the run and names the rules to add. `--dir` and `--file` can be used together.
-- `--json` returns `{model, response, tokens, deniedActions, timedOut}`.
+- `--json` returns `{model, conversationId, response, tokens, deniedActions, timedOut}`.
 - It runs in the foreground by default. `--background` runs it as a background task.
 - `agy` runs in a fresh temp folder that is deleted afterwards. `agy`'s own saved conversations are left alone.
 - If `agy` refused a tool or the run timed out, a short note follows the answer.
-- The plugin tells Gemini to use web search, web pages and the local files it was given. With `--dir`, it may also run `ls` and `grep`, one plain command at a time. It tells Gemini never to run other shell commands, write files or start subagents. When `agy` runs without a terminal, it cannot ask you for permission. So one refused tool ends the run, and the answer is empty.
+- The plugin tells Gemini to use web search, web pages and the local files it was given. With `--dir`, it may also run `ls` and `grep`, one plain command at a time. It tells Gemini never to run other shell commands, write files or start subagents. When `agy` runs without a terminal, it cannot ask you for permission. So one refused tool ends the run, and the answer is empty. Subagents are the exception: `agy` runs them with no allow rule and picks their model itself, so a hook denies them (see below).
 - For `--dir`, add these two rules to `~/.gemini/antigravity-cli/settings.json`:
 
   ```json
   "permissions": { "allow": ["command(ls)", "command(grep)"] }
   ```
 
-  The rules apply to every `agy` run, also when you use `agy` yourself. Tested on `agy` 1.4.2: with these rules, `agy` still refuses chains (`&&`, `;`), pipes and `$(...)`. But it runs a redirect such as `grep x dir > file` when the file is inside the workspace: the temp folder or a `--dir` folder. So each run also loads a hook from its temp folder, `.agents/hooks.json`. The hook runs `scripts/command-gate.mjs` before each command. It allows one plain `ls` or `grep` command and denies anything with `;`, `&`, `|`, `<`, `>`, `$`, a backtick, a backslash, brackets or a new line. If the hook fails, `agy` denies the command. A hook denial does not end the run. The plugin adds each denied command to `deniedActions` as `{"action": "command", "display_name": "<the command>"}`, so it shows in the refused-tools note. The hook cannot replace the two rules: `agy` refuses `ls` and `grep` without them, even when the hook allows them. The forms `command(ls *)` and `command(ls:*)` do not match. `rg` and `find` are left out, because `rg --pre` and `find -exec` run other programs.
+  The rules apply to every `agy` run, also when you use `agy` yourself. Tested on `agy` 1.4.2 and 1.4.3: with these rules, `agy` still refuses chains (`&&`, `;`), pipes and `$(...)`. But it runs a redirect such as `grep x dir > file` when the file is inside the workspace: the temp folder or a `--dir` folder. So each run also loads a hook from its temp folder, `.agents/hooks.json`. The hook runs `scripts/command-gate.mjs` before each command and before each `invoke_subagent`, `define_subagent`, `manage_subagents`, `browser_subagent` or `schedule` call. It allows one plain `ls` or `grep` command and denies anything with `;`, `&`, `|`, `<`, `>`, `$`, a backtick, a backslash, brackets or a new line. It denies every subagent and `schedule` call. If the hook fails, `agy` denies the call. A hook denial does not end the run. The plugin adds each denied command to `deniedActions` as `{"action": "command", "display_name": "<the command>"}`, and each denied subagent call as `{"action": "invoke_subagent"}`, so it shows in the refused-tools note. The hook cannot replace the two rules: `agy` refuses `ls` and `grep` without them, even when the hook allows them. The forms `command(ls *)` and `command(ls:*)` do not match. `rg` and `find` are left out, because `rg --pre` and `find -exec` run other programs.
 - By default, `agy` also refuses to open web pages. Research jobs, such as reading Reddit threads, need page reads. To allow them, add this to `~/.gemini/antigravity-cli/settings.json`:
 
   ```json
@@ -156,12 +161,13 @@ Environment variables:
 
 For each call, the plugin:
 
-1. Runs `agy` with every flag in `--flag=value` form: `--model`, one `--add-dir` for each `/gemini:ask --dir` folder, `--output-format=json`, `--disable-slash-commands`, then `--print=<prompt>` and `--print-timeout`. Reviews add `--json-schema`. The prompt is the value of `--print`, because `agy` ignores stdin in print mode. `agy` runs in an empty temp folder that holds the command hook (see [`/gemini:ask`](#geminiask))
-2. Reads the JSON result: the answer (`structured_output` when a schema was used, otherwise `response`), token usage, and refused tools
-3. Checks `agy`'s stderr for its timeout notice, and on a nonzero exit for `AGY_ERROR`, unknown model, used-up quota, and sign-in errors, in that order. The quota check comes before the sign-in check, because a quota message can contain words such as "sign in"
-4. For reviews, validates the result against the schema, resolves redirect links, and renders the report
+1. Runs `agy` with every flag in `--flag=value` form: `--model`, one `--add-dir` for each `/gemini:ask --dir` folder, `--conversation` for `/gemini:ask --resume`, `--input-format=stream-json`, `--output-format=stream-json`, `--disable-slash-commands`, and `--print-timeout`. Reviews add `--json-schema`. `agy` runs in an empty temp folder that holds the hook (see [`/gemini:ask`](#geminiask))
+2. Writes the prompt to `agy`'s stdin as one stream-json line, `{"event":"user","message":{"role":"user","content":"<prompt>"}}`, then closes stdin, so `agy` ends after one turn
+3. Reads `agy`'s events, one JSON object per line, until stdout closes. It keeps the last `result` event: the answer (`structured_output` when a schema was used, otherwise `response`), token usage, refused tools and the conversation ID. A run with no `result` event is an error
+4. Checks `agy`'s stderr for its timeout notice, and on a nonzero exit for `AGY_ERROR`, unknown model, used-up quota, and sign-in errors, in that order. The quota check comes before the sign-in check, because a quota message can contain words such as "sign in"
+5. For reviews, validates the result against the schema, resolves redirect links, and renders the report
 
-Because the prompt is a command-line argument, other programs on your machine can see it with `ps` while `agy` runs. Do not send passwords, tokens or other secrets.
+The prompt travels on stdin, so `ps` does not show it.
 
 ## FAQ
 
@@ -191,7 +197,7 @@ As of `agy` 1.4.2, `agy models` lists `gemini-4-argon-{low,medium,high}`, `gemin
 
 ### Why is a grounded review slow?
 
-Each claim needs at least one web search, and the model reasons over the results. A review of four or five claims can take several minutes. `agy` does not stream progress, so the wait is silent until the answer arrives.
+Each claim needs at least one web search, and the model reasons over the results. A review of four or five claims can take several minutes. `agy` streams progress events, but the plugin shows only the final answer, so the wait is silent until it arrives.
 
 ### Does the search cost money?
 
@@ -201,11 +207,11 @@ Your `agy` sign-in governs billing and quota. `/gemini:setup` shows how much Gem
 
 On May 19, 2026 at Google I/O, Google announced that Gemini CLI was being retired for free/Pro/Ultra users on June 18, 2026 and replaced with Antigravity CLI (`agy`). This plugin migrated in response. What changed and what stayed:
 
-- **Transport.** Now spawns `agy` in print mode and reads its JSON output. The previous ACP JSON-RPC handshake (`initialize`, `session/new`, `session/set_mode`, `session/set_model`, `session/prompt`, `session/cancel`, `session/update`) is gone; `agy` does not expose ACP. Since agy 1.1.x, `--print` takes the prompt as its value. Bare `--print` with the prompt on stdin exits 2 with `flag needs an argument`, because stdin is ignored in print mode. So the plugin passes `--print=<prompt>`. It needs agy 1.3.x or later.
+- **Transport.** Now spawns `agy` in print mode, sends the prompt on stdin as stream-json, and reads its stream-json events. The previous ACP JSON-RPC handshake (`initialize`, `session/new`, `session/set_mode`, `session/set_model`, `session/prompt`, `session/cancel`, `session/update`) is gone; `agy` does not expose ACP. Until October 2026 the plugin passed `--print=<prompt>`, because `agy` ignores stdin with its default text input. That put the prompt in `ps` and capped it near 128 KiB on Linux.
 - **Plan mode.** Removed. Headless `agy` cannot ask for permission, so it refuses file writes, commands and page fetches. Reviews stay read-only without a session mode.
-- **Tool-call observability.** Lost. `agy` does not report which tools ran. The `[grounding]` footer counts cited sources and lists any tools `agy` refused.
+- **Tool-call observability.** `agy`'s stream-json output reports each tool call, but the plugin does not use it yet. The `[grounding]` footer counts cited sources and lists any tools `agy` refused.
 - **Model selection.** Reviews pin the model, passed as `--model=<id>`. See [Which model runs the review?](#which-model-runs-the-review). Model IDs are the ones `agy models` prints. `/gemini:ask` takes any of them with `--model`.
-- **Streaming progress.** Lost. `agy --print` returns the full response in one shot. The default timeout is 20 minutes.
+- **Streaming progress.** `agy` streams events, but the plugin returns only the final result. The default timeout is 20 minutes.
 - **Auth.** Now uses Google OAuth via `agy`. `GEMINI_API_KEY` and `gemini auth login` are no longer used.
 - **Slash commands.** `/gemini:review` and `/gemini:setup` still work. `/gemini:ask` is new.
 
@@ -239,7 +245,7 @@ claude --plugin-dir ./plugins/gemini
 
 ### Known problems
 
-- Do not paste `$ARGUMENTS` into a shell string in command markdown. Quotes, `$` or a backtick in the user's text then break the command. `review.md` and `ask.md` tell Claude to pass each flag as its own argument and the free text as one single-quoted argument.
+- Do not paste `$ARGUMENTS` into a shell string in command markdown. Quotes, `$` or a backtick in the user's text then break the command. `review.md` and `ask.md` tell Claude to pass each flag as its own argument and the free text as one single-quoted argument after `--`, so free text that starts with `--` is not read as a flag.
 
 ## License
 

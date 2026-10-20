@@ -1,11 +1,14 @@
 import { test, beforeEach, afterEach } from "node:test";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import {
   handleReview,
   setRunReviewForTest,
   PRIMARY_REVIEW_MODEL,
-  FALLBACK_REVIEW_MODEL
+  FALLBACK_REVIEW_MODEL,
+  GATED_TOOLS
 } from "../scripts/gemini-companion.mjs";
 import {
   ConfigError,
@@ -538,4 +541,58 @@ test("the run gets the whole --timeout-ms budget", async () => {
   });
   await captureStdout(() => handleReview(["--timeout-ms", "600000"], { stdin: "x" }));
   assert.deepEqual(timeouts, [600000]);
+});
+
+test("review runs agy with a hook that denies every command, also plain ls, and every subagent", async () => {
+  let cwd;
+  setRunReviewForTest(async (args) => {
+    cwd = args.cwd;
+    // Run the hook the way agy does, from the hooks.json in the temp folder.
+    const hooks = JSON.parse(fs.readFileSync(path.join(cwd, ".agents", "hooks.json"), "utf8"));
+    const [group] = hooks["gemini-plugin-command-gate"].PreToolUse;
+    assert.equal(group.matcher, GATED_TOOLS);
+    const calls = [
+      { name: "run_command", args: { CommandLine: "ls /tmp" } },
+      { name: "run_command", args: { CommandLine: "grep -rn token /Users" } },
+      { name: "invoke_subagent", args: { Prompt: "x" } }
+    ];
+    for (const toolCall of calls) {
+      const out = execFileSync("sh", ["-c", group.hooks[0].command], { input: JSON.stringify({ toolCall }), encoding: "utf8" });
+      assert.equal(JSON.parse(out).decision, "deny", toolCall.name);
+    }
+    return okPayload;
+  });
+  const out = await captureStdout(() => handleReview(["--json"], { stdin: "claim body" }));
+  assert.deepEqual(JSON.parse(out).deniedActions, [
+    { action: "command", display_name: "ls /tmp" },
+    { action: "command", display_name: "grep -rn token /Users" },
+    { action: "invoke_subagent" }
+  ]);
+  assert.equal(fs.existsSync(cwd), false, "the temp folder is removed");
+});
+
+test("review refuses --cwd, which would skip the gated temp folder, without calling agy", async () => {
+  setRunReviewForTest(async () => {
+    throw new Error("should not be called");
+  });
+  for (const argv of [["--cwd", "/tmp"], ["--cwd=/tmp"], ["--cwd=/tmp", "check dates"]]) {
+    await assert.rejects(
+      () => handleReview(argv, { stdin: "claim body" }),
+      (err) => err instanceof ConfigError && /--cwd/.test(err.message),
+      JSON.stringify(argv)
+    );
+  }
+});
+
+test("focus text after -- is focus text, also when it starts with --cwd=, and the run stays gated", async () => {
+  let seen;
+  setRunReviewForTest(async (args) => {
+    seen = args;
+    const hooks = JSON.parse(fs.readFileSync(path.join(args.cwd, ".agents", "hooks.json"), "utf8"));
+    assert.match(hooks["gemini-plugin-command-gate"].PreToolUse[0].hooks[0].command, /'no-commands'$/);
+    return okPayload;
+  });
+  await captureStdout(() => handleReview(["--json", "--", "--cwd=/tmp check dates"], { stdin: "claim body" }));
+  assert.match(seen.prompt, /<user_focus>\n--cwd=\/tmp check dates\n<\/user_focus>/);
+  assert.match(path.basename(seen.cwd), /^gemini-review-cwd-/);
 });

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { Readable, Writable } from "node:stream";
+import { PassThrough, Readable, Writable } from "node:stream";
 import { runReview } from "../scripts/lib/agy-runner.mjs";
 import {
   AgyAuthError,
@@ -11,41 +11,61 @@ import {
   AgyTimeoutError
 } from "../scripts/lib/errors.mjs";
 
-function makeFakeProc({ stdoutChunks = [], stderrChunks = [], exitCode = 0, exitDelayMs = 5, captureStdin = null } = {}) {
+// A fake agy child. It emits "exit" and then "close", as Node does once
+// stdout and stderr are drained. `stdinError` makes every stdin write fail.
+function makeFakeProc({ stdoutChunks = [], stderrChunks = [], exitCode = 0, exitDelayMs = 5, stdinError = null } = {}) {
   const proc = new EventEmitter();
   const stdinWrites = [];
+  let stdinEnded = false;
   proc.stdin = new Writable({
     write(chunk, _enc, cb) {
+      if (stdinError) return cb(stdinError);
       stdinWrites.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
       cb();
     },
     final(cb) {
-      if (captureStdin) captureStdin(stdinWrites.join(""));
+      stdinEnded = true;
       cb();
     }
   });
   proc.stdout = Readable.from(stdoutChunks);
   proc.stderr = Readable.from(stderrChunks);
+  const end = (code, signal) => {
+    proc.emit("exit", code, signal);
+    proc.emit("close", code, signal);
+  };
   proc.kill = (sig) => {
     proc._killedWith = sig;
-    setTimeout(() => proc.emit("exit", null, sig ?? "SIGTERM"), 1);
+    setTimeout(() => end(null, sig ?? "SIGTERM"), 1);
     return true;
   };
-  setTimeout(() => proc.emit("exit", exitCode, null), exitDelayMs);
-  return { proc, getStdin: () => stdinWrites.join("") };
+  setTimeout(() => end(exitCode, null), exitDelayMs);
+  return { proc, getStdin: () => stdinWrites.join(""), stdinEnded: () => stdinEnded };
 }
 
-function agyJson(fields = {}) {
+const INIT_EVENT = JSON.stringify({
+  event: "init",
+  conversation_id: "c-1",
+  init: { model: "gemini-3.8-flash-low", tools: ["run_command", "search_web"], permission_mode: "request-review" }
+});
+
+function resultEvent(fields = {}) {
   return JSON.stringify({
-    conversation_id: "c-1",
-    status: "SUCCESS",
-    response: "",
-    duration_seconds: 1,
-    num_turns: 1,
-    usage: { input_tokens: 10, output_tokens: 2, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 12 },
-    ...fields
+    event: "result",
+    result: {
+      conversation_id: "c-1",
+      status: "SUCCESS",
+      response: "",
+      duration_seconds: 1,
+      num_turns: 1,
+      usage: { input_tokens: 10, output_tokens: 2, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 12 },
+      ...fields
+    }
   });
 }
+
+// agy's stream-json stdout: one event per line, the result event last.
+const agyStream = (fields) => `${INIT_EVENT}\n${resultEvent(fields)}\n`;
 
 function captureArgs(proc) {
   const captured = {};
@@ -65,91 +85,161 @@ const UNKNOWN_MODEL_STDERR = [
   ""
 ].join("\n");
 
-test("passes json output, slash-command guard and the prompt as --flag=value args", async () => {
-  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "hello back\n" })] });
+test("passes stream-json in and out, the slash-command guard and the timeout as --flag=value args, never the prompt", async () => {
+  const { proc } = makeFakeProc({ stdoutChunks: [agyStream({ response: "hello back\n" })] });
   const { captured, spawnFn } = captureArgs(proc);
   const result = await runReview({ prompt: "ping", cwd: "/tmp/xyz", spawnFn, promptTimeoutMs: 60_000 });
   assert.equal(captured.cmd, "agy");
   assert.deepEqual(captured.args, [
-    "--output-format=json",
+    "--input-format=stream-json",
+    "--output-format=stream-json",
     "--disable-slash-commands",
-    "--print=ping",
     "--print-timeout=60s"
   ]);
   assert.equal(captured.opts.cwd, "/tmp/xyz");
-  // The prompt travels in argv; agy ignores stdin in print mode.
-  assert.equal(captured.opts.stdio[0], "ignore");
+  assert.equal(captured.opts.stdio[0], "pipe");
   assert.equal(result.text, "hello back\n");
   assert.equal(result.response, "hello back\n");
   assert.equal(result.stopReason, "end_turn");
   assert.equal(result.timedOut, false);
   assert.deepEqual(result.deniedActions, []);
   assert.equal(result.model, null);
+  assert.equal(result.conversationId, "c-1");
   assert.equal(result.tokens.input_tokens, 10);
   assert.equal(result.tokens.total_tokens, 12);
 });
 
-test("passes --model and --json-schema before --print", async () => {
-  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "ok" })] });
+test("writes the prompt to stdin as one stream-json user message with the event field, then closes stdin", async () => {
+  // Quotes, new lines, a marker-like line and non-ASCII text must survive as one line.
+  const prompt = 'Say "hi".\nLine two: {"event":"user"}\nGEMINI_EOF_X\né中\u{1F600} end';
+  const fake = makeFakeProc({ stdoutChunks: [agyStream({ response: "hi" })] });
+  await runReview({ prompt, spawnFn: () => fake.proc });
+  const sent = fake.getStdin();
+  assert.ok(sent.endsWith("\n"));
+  assert.equal(sent.split("\n").length, 2, "exactly one line");
+  assert.deepEqual(JSON.parse(sent), { event: "user", message: { role: "user", content: prompt } });
+  assert.ok(fake.stdinEnded(), "stdin is closed, so agy ends after one turn");
+});
+
+test("passes --model, --add-dir, --conversation and --json-schema before the stream flags and the timeout", async () => {
+  const { proc } = makeFakeProc({ stdoutChunks: [agyStream({ response: "ok" })] });
   const { captured, spawnFn } = captureArgs(proc);
   const result = await runReview({
     prompt: "x",
     model: "gemini-3.8-flash-high",
+    addDirs: ["/repo/a", "/other b"],
+    conversationId: "c-1",
     jsonSchema: "/abs/schema.json",
     promptTimeoutMs: 60_000,
     spawnFn
   });
   assert.deepEqual(captured.args, [
     "--model=gemini-3.8-flash-high",
-    "--output-format=json",
+    "--add-dir=/repo/a",
+    "--add-dir=/other b",
+    "--conversation=c-1",
+    "--input-format=stream-json",
+    "--output-format=stream-json",
     "--disable-slash-commands",
     "--json-schema=/abs/schema.json",
-    "--print=x",
     "--print-timeout=60s"
   ]);
   assert.equal(result.model, "gemini-3.8-flash-high");
 });
 
-test("passes each addDirs entry as --add-dir after --model", async () => {
-  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "ok" })] });
-  const { captured, spawnFn } = captureArgs(proc);
-  await runReview({
-    prompt: "x",
-    model: "gemini-3.8-flash-low",
-    addDirs: ["/repo/a", "/other b"],
-    promptTimeoutMs: 60_000,
-    spawnFn
-  });
-  assert.deepEqual(captured.args, [
-    "--model=gemini-3.8-flash-low",
-    "--add-dir=/repo/a",
-    "--add-dir=/other b",
-    "--output-format=json",
-    "--disable-slash-commands",
-    "--print=x",
-    "--print-timeout=60s"
-  ]);
-});
-
 test("rounds prompt-timeout up to the nearest second for agy's Go duration", async () => {
-  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "k" })] });
+  const { proc } = makeFakeProc({ stdoutChunks: [agyStream({ response: "k" })] });
   const { captured, spawnFn } = captureArgs(proc);
   await runReview({ prompt: "x", promptTimeoutMs: 1500, spawnFn });
   assert.equal(captured.args.at(-1), "--print-timeout=2s");
 });
 
 test("default prompt timeout is 20 minutes", async () => {
-  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "k" })] });
+  const { proc } = makeFakeProc({ stdoutChunks: [agyStream({ response: "k" })] });
   const { captured, spawnFn } = captureArgs(proc);
   await runReview({ prompt: "x", spawnFn });
   assert.equal(captured.args.at(-1), "--print-timeout=1200s");
+});
+
+test("the answer is the last result event, not the step events before it", async () => {
+  // Shape from agy 1.4.3 (T4): text deltas in step_update events, then the result.
+  const step = (i, text) =>
+    JSON.stringify({ event: "step_update", step_update: { conversation_id: "c-9", step_index: i, state: "DONE", step_type: "agent_response", text_delta: text } });
+  const { proc } = makeFakeProc({
+    stdoutChunks: [`${INIT_EVENT}\n${step(1, "KI")}\n${step(2, "WI\n")}\n${resultEvent({ conversation_id: "c-9", response: "KIWI\n" })}\n`]
+  });
+  const result = await runReview({ prompt: "x", spawnFn: () => proc });
+  assert.equal(result.text, "KIWI\n");
+  assert.equal(result.conversationId, "c-9");
+});
+
+test("parses events split across chunks, several events in one chunk, and a last line with no newline", async () => {
+  const line = resultEvent({ response: "Sé" });
+  const cut = Math.floor(line.length / 2);
+  const { proc } = makeFakeProc({
+    stdoutChunks: [`${INIT_EVENT}\n${INIT_EVENT}`, "\n", line.slice(0, cut), line.slice(cut)]
+  });
+  const result = await runReview({ prompt: "x", spawnFn: () => proc });
+  assert.equal(result.text, "Sé");
+});
+
+test("waits for stdout to close, so a result that arrives after exit is kept", async () => {
+  const proc = new EventEmitter();
+  proc.stdin = new Writable({ write: (_c, _e, cb) => cb() });
+  proc.stdout = new PassThrough();
+  proc.stderr = Readable.from([]);
+  proc.kill = () => true;
+  setTimeout(() => proc.emit("exit", 0, null), 1);
+  setTimeout(() => proc.stdout.end(agyStream({ response: "late" })), 10);
+  proc.stdout.on("end", () => setTimeout(() => proc.emit("close", 0, null), 1));
+  const result = await runReview({ prompt: "x", spawnFn: () => proc });
+  assert.equal(result.text, "late");
+});
+
+test("exit 0 without a valid last result event is an error that shows the output", async () => {
+  const bad = (payload) => `${JSON.stringify({ event: "result", result: payload })}\n`;
+  for (const stdoutChunks of [
+    ["not json at all\n"],
+    [`${INIT_EVENT}\n`],
+    [bad("oops")],
+    [bad([])],
+    [bad(null)],
+    [bad({ conversation_id: "c-1", response: null })],
+    [bad({ response: "no ID" })],
+    [bad({ conversation_id: "", response: "empty ID" })],
+    // A bad result after a good one must not leave the good one selected.
+    [agyStream({ response: "good" }), bad([])]
+  ]) {
+    const { proc } = makeFakeProc({ stdoutChunks });
+    await assert.rejects(
+      () => runReview({ prompt: "x", spawnFn: () => proc }),
+      (err) => err instanceof AgyConnectionError && /without a valid result/.test(err.message),
+      JSON.stringify(stdoutChunks)
+    );
+  }
+  const { proc } = makeFakeProc({ stdoutChunks: ["not json at all\n"] });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => proc }), /not json at all/);
+  const arr = makeFakeProc({ stdoutChunks: [bad([])] });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => arr.proc }), /\(got \[\]\)/);
+});
+
+test("a stdin write that fails (EPIPE) does not crash: the exit code and stderr decide the error", async () => {
+  const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+  const { proc } = makeFakeProc({ stderrChunks: [UNKNOWN_MODEL_STDERR], exitCode: 1, stdinError: epipe });
+  await assert.rejects(() => runReview({ prompt: "x", model: "gemini-9-fake", spawnFn: () => proc }), AgyModelError);
+
+  const quiet = makeFakeProc({ exitCode: 0, stdinError: epipe });
+  await assert.rejects(
+    () => runReview({ prompt: "x", spawnFn: () => quiet.proc }),
+    (err) => err instanceof AgyConnectionError && /without a valid result/.test(err.message)
+  );
 });
 
 test("with a schema, text is the serialized structured_output, never the response", async () => {
   const structured = { overall: "mixed", summary: "s", claims: [], reasoning_issues: [] };
   const { proc } = makeFakeProc({
     stdoutChunks: [
-      agyJson({
+      agyStream({
         response: JSON.stringify({ ...structured, toolAction: "Finishing", toolSummary: "done" }),
         structured_output: structured
       })
@@ -161,17 +251,18 @@ test("with a schema, text is the serialized structured_output, never the respons
 });
 
 test("with a schema but no structured_output, text is empty and response is kept", async () => {
-  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "partial prose" })] });
+  const { proc } = makeFakeProc({ stdoutChunks: [agyStream({ response: "partial prose" })] });
   const result = await runReview({ prompt: "x", jsonSchema: "/s.json", spawnFn: () => proc });
   assert.equal(result.text, "");
   assert.equal(result.response, "partial prose");
 });
 
-test("returns denied_actions when agy refuses a tool", async () => {
-  const denied = [{ action: "read_url", display_name: "ReadUrlContent" }];
+test("returns denied_actions from the result event when agy refuses a tool", async () => {
+  // Shape from agy 1.4.3 in stream mode (build test b3).
+  const denied = [{ action: "read_file", display_name: "ReadFile" }];
   const { proc } = makeFakeProc({
-    stdoutChunks: [agyJson({ response: "", denied_actions: denied })],
-    stderrChunks: ['jetski: no output produced, a tool required the "read_url" permission\n']
+    stdoutChunks: [agyStream({ response: "", denied_actions: denied })],
+    stderrChunks: ['jetski: no output produced — a tool required the "read_file" permission\n']
   });
   const result = await runReview({ prompt: "x", spawnFn: () => proc });
   assert.equal(result.text, "");
@@ -181,7 +272,7 @@ test("returns denied_actions when agy refuses a tool", async () => {
 test("detects agy's print timeout marker and drops all-zero usage", async () => {
   const { proc } = makeFakeProc({
     stdoutChunks: [
-      agyJson({
+      agyStream({
         response: "partial essay",
         duration_seconds: 0,
         usage: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 0 }
@@ -193,13 +284,6 @@ test("detects agy's print timeout marker and drops all-zero usage", async () => 
   assert.equal(result.timedOut, true);
   assert.equal(result.stopReason, "timeout");
   assert.equal(result.text, "partial essay");
-  assert.equal(result.tokens, null);
-});
-
-test("falls back to raw stdout when it is not JSON", async () => {
-  const { proc } = makeFakeProc({ stdoutChunks: ["part-1 ", "part-2"] });
-  const result = await runReview({ prompt: "x", spawnFn: () => proc });
-  assert.equal(result.text, "part-1 part-2");
   assert.equal(result.tokens, null);
 });
 
@@ -253,7 +337,7 @@ test("AGY_ERROR with UNAUTHENTICATED status throws AgyAuthError", async () => {
 
 test("unknown model throws AgyModelError pointing at agy models, never an auth error", async () => {
   const { proc } = makeFakeProc({
-    stdoutChunks: [agyJson({ status: "ERROR", error: UNKNOWN_MODEL_STDERR })],
+    stdoutChunks: [agyStream({ status: "ERROR", error: UNKNOWN_MODEL_STDERR })],
     stderrChunks: [UNKNOWN_MODEL_STDERR],
     exitCode: 1
   });
@@ -266,9 +350,9 @@ test("unknown model throws AgyModelError pointing at agy models, never an auth e
   );
 });
 
-test("unknown model is detected from the JSON error when stderr is empty", async () => {
+test("unknown model is detected from the result event's error when stderr is empty", async () => {
   const { proc } = makeFakeProc({
-    stdoutChunks: [agyJson({ status: "ERROR", error: UNKNOWN_MODEL_STDERR })],
+    stdoutChunks: [agyStream({ status: "ERROR", error: UNKNOWN_MODEL_STDERR })],
     exitCode: 1
   });
   await assert.rejects(
@@ -293,7 +377,7 @@ test("AGY_ERROR with RESOURCE_EXHAUSTED throws AgyQuotaError naming the model", 
 
 test("a quota message that says 'sign in' is a quota error, not a sign-in error", async () => {
   const text = "You have reached your Gemini 4 Argon quota. Sign in with an Ultra plan for more.";
-  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ status: "ERROR", error: text })], stderrChunks: [text], exitCode: 1 });
+  const { proc } = makeFakeProc({ stdoutChunks: [agyStream({ status: "ERROR", error: text })], stderrChunks: [text], exitCode: 1 });
   await assert.rejects(
     () => runReview({ prompt: "x", model: "gemini-4-argon-high", spawnFn: () => proc }),
     AgyQuotaError
@@ -394,7 +478,7 @@ test("wall-clock timer runs 30s past agy's --print-timeout, then kills", async (
 });
 
 test("agentVersion is passed through", async () => {
-  const { proc } = makeFakeProc({ stdoutChunks: [agyJson({ response: "ok" })] });
+  const { proc } = makeFakeProc({ stdoutChunks: [agyStream({ response: "ok" })] });
   const result = await runReview({ prompt: "x", agentVersion: "1.3.3", spawnFn: () => proc });
   assert.equal(result.agentVersion, "1.3.3");
 });

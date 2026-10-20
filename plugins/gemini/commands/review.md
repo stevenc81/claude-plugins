@@ -5,7 +5,7 @@ disable-model-invocation: false
 allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" *)
 ---
 
-Run a grounded fact-check of content from the current conversation via `agy --print` (Antigravity CLI). The agent runs live web searches and returns structured findings: which claims are supported, uncertain, or contradicted, with source URLs, plus any reasoning issues.
+Run a grounded fact-check of content from the current conversation via headless `agy` (Antigravity CLI). The agent runs live web searches and returns structured findings: which claims are supported, uncertain, or contradicted, with source URLs, plus any reasoning issues.
 
 Raw slash-command arguments:
 `$ARGUMENTS`
@@ -28,16 +28,16 @@ Building the command:
 - Do not paste `$ARGUMENTS` into the shell command. Build the arguments yourself.
 - Drop `--wait` and `--background` from the raw arguments. Pass `--json` as its own argument.
 - If the raw arguments include `--model <id>`, pass `--model` and the ID as two arguments, with the ID single-quoted. Leave `--model` out when the caller gave none. The plugin then uses its default model.
-- Pass the rest of the raw arguments (the focus text) as ONE single-quoted argument. Write each `'` inside it as `'\''`. Leave it out when there is no focus text.
-- Example: for the raw arguments `check Node's "LTS" date`, the arguments are `'check Node'\''s "LTS" date'`.
-- Example: for the raw arguments `--model gemini-4-argon-medium focus on dates`, the arguments are `--model 'gemini-4-argon-medium' 'focus on dates'`.
+- Pass the rest of the raw arguments (the focus text) as ONE single-quoted argument, after a `--` argument, so text that starts with `--` is not read as a flag. Write each `'` inside it as `'\''`. Leave out both when there is no focus text.
+- Example: for the raw arguments `check Node's "LTS" date`, the arguments are `-- 'check Node'\''s "LTS" date'`.
+- Example: for the raw arguments `--model gemini-4-argon-medium focus on dates`, the arguments are `--model 'gemini-4-argon-medium' -- 'focus on dates'`.
 
 Flow:
 - Always launch the review with `Bash` in the background, even when the raw arguments include `--wait`. A review of a few short claims can take more than 10 minutes, and a foreground `Bash` call stops at 10.
 - Use a quoted heredoc, so the content is piped in literally with no shell expansion:
 ```typescript
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" review 'check the "LTS" date' <<'GEMINI_EOF_7Q2KX9WM'
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" review -- 'check the "LTS" date' <<'GEMINI_EOF_7Q2KX9WM'
 <the full text of the content to review, verbatim>
 GEMINI_EOF_7Q2KX9WM`,
   description: "Gemini review",

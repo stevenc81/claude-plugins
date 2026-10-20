@@ -30,16 +30,19 @@ import {
 } from "./lib/errors.mjs";
 
 const MAX_REVIEW_INPUT_BYTES = 40_000;
-// The prompt travels in one argv entry; Linux caps a single argument at 128 KiB.
-const MAX_ASK_PROMPT_BYTES = 100_000;
-// The full prompt, with the file and folder lists and the tool rule, must stay
-// under that 128 KiB limit with room for "--print=".
-const MAX_PRINT_ARG_BYTES = 128 * 1024 - 1024;
+// The full ask prompt, with the file and folder lists and the tool rule. It
+// travels on stdin, so no argv limit applies. But agy 1.4.3 shows the model
+// only the first 192,000 bytes of a message, counting its own wrapper of about
+// 400 bytes, and drops the rest without an error. The tool rule comes last, so
+// it would be lost first. In October 2026 on gemini-3.8-flash-low, a
+// 190,000-byte prompt arrived whole, and a 1 MB prompt was cut.
+const MAX_ASK_PROMPT_BYTES = 190_000;
 // Below this, a fallback review run would be cut off before it could finish.
 const MIN_FALLBACK_MS = 60_000;
 // Headless agy cannot ask for permission, so one refused tool ends the run with
-// no answer at all. Shell commands, file writes and subagents are refused.
-// Page reads work only if the user allows read_url in their agy settings.
+// no answer at all. Shell commands and file writes are refused. Subagents run
+// with no allow rule, so the hook denies them (see makeNeutralCwd). Page reads
+// work only if the user allows read_url in their agy settings.
 const NO_OTHER_TOOLS =
   "write files or start subagents: this run cannot ask for permission, and a refused tool ends it with no answer.";
 export const ASK_TOOL_RULE = `Tools: use web search, and open web pages only if you need to. To read local files, use your file-reading tool with the paths given above. Never run shell commands, ${NO_OTHER_TOOLS}`;
@@ -148,26 +151,29 @@ const COMMAND_GATE = fileURLToPath(new URL("./command-gate.mjs", import.meta.url
 const shellQuote = (s) => `'${s.replaceAll("'", `'\\''`)}'`;
 
 const hookDenialLog = (cwd) => path.join(cwd, ".agents", "denied.jsonl");
+// The tools the hook sees: commands, and subagents with the `schedule` tool
+// that waits for them. agy matches this regex against the tool name.
+export const GATED_TOOLS = "^(run_command|invoke_subagent|define_subagent|manage_subagents|browser_subagent|schedule)$";
 
-// agy loads .agents/hooks.json from its working folder. The hook lets agy run
-// only one plain ls or grep command (see command-gate.mjs).
-function makeNeutralCwd(prefix) {
+// agy loads .agents/hooks.json from its working folder. The hook denies
+// subagents, and lets agy run only one plain ls or grep command, or no
+// command at all when allowCommands is false (see command-gate.mjs).
+function makeNeutralCwd(prefix, allowCommands) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  const command = [process.execPath, COMMAND_GATE, hookDenialLog(dir)].map(shellQuote).join(" ");
-  const hook = { type: "command", command, timeout: 10 };
+  const gate = [process.execPath, COMMAND_GATE, hookDenialLog(dir), ...(allowCommands ? [] : ["no-commands"])];
+  const hook = { type: "command", command: gate.map(shellQuote).join(" "), timeout: 10 };
   fs.mkdirSync(path.join(dir, ".agents"));
   fs.writeFileSync(
     path.join(dir, ".agents", "hooks.json"),
-    JSON.stringify({ "gemini-plugin-command-gate": { PreToolUse: [{ matcher: "run_command", hooks: [hook] }] } })
+    JSON.stringify({ "gemini-plugin-command-gate": { PreToolUse: [{ matcher: GATED_TOOLS, hooks: [hook] }] } })
   );
   return dir;
 }
 
-// Runs agy and adds the commands that the hook denied in this run to
-// deniedActions, so callers see them next to agy's own refusals. A cwd that
-// makeNeutralCwd did not make has no hook (gated is false).
-async function runAgy(args, gated = true) {
-  if (!gated) return runReviewImpl(args);
+// Runs agy in a folder that makeNeutralCwd made, and adds the tool calls that
+// the hook denied in this run to deniedActions, so callers see them next to
+// agy's own refusals.
+async function runAgy(args) {
   const log = hookDenialLog(args.cwd);
   fs.rmSync(log, { force: true });
   const result = await runReviewImpl(args);
@@ -219,12 +225,19 @@ function parseReviewResult(result) {
 }
 
 export async function handleReview(argv, { stdin = null } = {}) {
-  // Plain argv: review.md passes each flag, and the focus text as one
-  // single-quoted argument, so nothing is re-split here.
+  // Plain argv: review.md passes each flag, then `--` and the focus text as
+  // one single-quoted argument, so nothing is re-split here.
   const { options, positionals } = parseArgs(argv, {
     allowPositionals: true,
     valueFlags: ["--timeout-ms", "--model"]
   });
+  // parseArgs knows --cwd for every command, but review must always run in its
+  // gated temp folder, so it refuses --cwd.
+  if (options.cwd != null) {
+    throw new ConfigError("Unknown flag: --cwd", {
+      suggestion: "/gemini:review takes only --model, --json and --timeout-ms. Put focus text after --."
+    });
+  }
   const promptTimeoutMs = promptTimeoutFrom(options);
   const requestedModel = options.model || PRIMARY_REVIEW_MODEL;
 
@@ -250,11 +263,9 @@ export async function handleReview(argv, { stdin = null } = {}) {
 
   // Evaluate the text in isolation: create an empty temp directory and use
   // that as the working directory so the agent has no repo to wander into
-  // when assessing claims. The --cwd option is accepted for testing overrides.
-  const neutralCwd = options.cwd
-    ? path.resolve(process.cwd(), options.cwd)
-    : makeNeutralCwd("gemini-review-cwd-");
-  const shouldCleanupCwd = !options.cwd;
+  // when assessing claims. Its hook denies every command and subagent: a web
+  // page can hold instructions for the model.
+  const neutralCwd = makeNeutralCwd("gemini-review-cwd-", false);
 
   const agyVersion = binaryAvailableImpl("agy", ["--version"], { cwd: neutralCwd }).detail;
 
@@ -274,7 +285,7 @@ export async function handleReview(argv, { stdin = null } = {}) {
   let fallbackReason = null;
   try {
     try {
-      result = await runAgy({ ...runArgs, model: requestedModel }, shouldCleanupCwd);
+      result = await runAgy({ ...runArgs, model: requestedModel });
     } catch (err) {
       // Flash cannot fix a sign-in problem, and a hard timeout used the whole budget.
       if (err instanceof AgyAuthError || err instanceof AgyTimeoutError) throw err;
@@ -287,14 +298,14 @@ export async function handleReview(argv, { stdin = null } = {}) {
       usedModel = FALLBACK_REVIEW_MODEL;
       fallbackReason = err.message;
       try {
-        result = await runAgy({ ...runArgs, model: FALLBACK_REVIEW_MODEL, promptTimeoutMs: leftMs }, shouldCleanupCwd);
+        result = await runAgy({ ...runArgs, model: FALLBACK_REVIEW_MODEL, promptTimeoutMs: leftMs });
       } catch (fallbackErr) {
         fallbackErr.message = `The requested model '${requestedModel}' failed: ${fallbackReason} The fallback model '${FALLBACK_REVIEW_MODEL}' also failed: ${fallbackErr.message}`;
         throw fallbackErr;
       }
     }
   } finally {
-    if (shouldCleanupCwd) removeNeutralCwd(neutralCwd);
+    removeNeutralCwd(neutralCwd);
   }
 
   const parsed = parseReviewResult(result);
@@ -567,23 +578,35 @@ export async function handleSetup(argv) {
 export async function handleAsk(argv, { stdin = null } = {}) {
   const { options, positionals } = parseArgs(argv, {
     allowPositionals: true,
-    valueFlags: ["--model", "--timeout-ms"],
+    valueFlags: ["--model", "--timeout-ms", "--prompt-file", "--resume"],
     listFlags: ["--file", "--dir"]
   });
   const promptTimeoutMs = promptTimeoutFrom(options);
+  const baseDir = resolveCwd(options);
 
-  // The prompt comes from the arguments, stdin (quoted heredoc), or both.
-  const stdinText = stdin != null ? stdin : process.stdin.isTTY ? "" : readAllStdinSync();
-  let prompt = [positionals.join(" ").trim(), String(stdinText ?? "").trim()]
+  // The prompt comes from the arguments, plus --prompt-file or stdin (quoted
+  // heredoc). With --prompt-file, stdin is not read.
+  let bodyText;
+  if (options["prompt-file"] != null) {
+    const promptFile = path.resolve(baseDir, options["prompt-file"]);
+    if (!fs.statSync(promptFile, { throwIfNoEntry: false })?.isFile()) {
+      throw new ConfigError(`Prompt file not found: ${promptFile}`, {
+        suggestion: "Check the --prompt-file path and rerun /gemini:ask."
+      });
+    }
+    bodyText = fs.readFileSync(promptFile, "utf8");
+  } else {
+    bodyText = stdin != null ? stdin : process.stdin.isTTY ? "" : readAllStdinSync();
+  }
+  let prompt = [positionals.join(" ").trim(), String(bodyText ?? "").trim()]
     .filter(Boolean)
     .join("\n\n");
   if (!prompt) {
     throw new ConfigError("No prompt given.", {
-      suggestion: "Pass the prompt as arguments or pipe it in on stdin, then rerun /gemini:ask."
+      suggestion: "Pass the prompt as arguments, in a file with --prompt-file, or on stdin, then rerun /gemini:ask."
     });
   }
 
-  const baseDir = resolveCwd(options);
   const files = (options.file ?? []).map((f) => path.resolve(baseDir, f));
   for (const file of files) {
     if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) {
@@ -620,20 +643,14 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   // The caller chooses the folders, so any folder is allowed, also / or the
   // home folder. agy's file tool reads only these folders.
   const realDirs = [...new Set(dirs.map((d) => fs.realpathSync(d)))];
-  // The cap is on the user's text. The full prompt is checked again below.
-  if (byteLength(prompt) > MAX_ASK_PROMPT_BYTES) {
-    throw new ConfigError(
-      `The prompt is ${byteLength(prompt)} bytes; the limit is ${MAX_ASK_PROMPT_BYTES}.`,
-      { suggestion: "Save large input to a file and pass it with --file <path> instead." }
-    );
-  }
   const model = options.model || DEFAULT_ASK_MODEL;
 
   // agy runs from an empty temp folder. Each --file is copied in, so agy sees
   // that file and nothing else from its folder. Each --dir is added with
   // --add-dir and read in place. agy keeps its own conversation history
-  // elsewhere; only the temp folder is removed.
-  const cwd = makeNeutralCwd("gemini-ask-cwd-");
+  // elsewhere; only the temp folder is removed. So a --resume turn must attach
+  // its files and folders again.
+  const cwd = makeNeutralCwd("gemini-ask-cwd-", true);
   let result;
   try {
     const copies = files.map((f, i) => path.join(cwd, `${i + 1}-${path.basename(f)}`));
@@ -645,10 +662,10 @@ export async function handleAsk(argv, { stdin = null } = {}) {
       prompt += `\n\nFolders for this request (absolute paths):\n${realDirs.map((d) => `- ${d}`).join("\n")}`;
     }
     prompt += `\n\n${realDirs.length > 0 ? ASK_DIR_TOOL_RULE : ASK_TOOL_RULE}`;
-    if (byteLength(prompt) > MAX_PRINT_ARG_BYTES) {
+    if (byteLength(prompt) > MAX_ASK_PROMPT_BYTES) {
       throw new ConfigError(
-        `The prompt with its file and folder lists is ${byteLength(prompt)} bytes; the limit is ${MAX_PRINT_ARG_BYTES}.`,
-        { suggestion: "Pass fewer --file or --dir paths, or a shorter prompt." }
+        `The prompt with its file and folder lists is ${byteLength(prompt)} bytes; the limit is ${MAX_ASK_PROMPT_BYTES}.`,
+        { suggestion: "agy shows the model only the first 192,000 bytes of a message. Split the input over several asks, or attach it with --file: Gemini then reads it in parts, not all at once." }
       );
     }
     result = await runAgy({
@@ -656,25 +673,34 @@ export async function handleAsk(argv, { stdin = null } = {}) {
       cwd,
       model,
       promptTimeoutMs,
-      ...(realDirs.length > 0 ? { addDirs: realDirs } : {})
+      ...(realDirs.length > 0 ? { addDirs: realDirs } : {}),
+      ...(options.resume ? { conversationId: options.resume } : {})
     });
   } finally {
     removeNeutralCwd(cwd);
   }
 
+  // agy only warns when it has no such conversation, and answers in a new
+  // one without the earlier turns. That answer would mislead, so it is dropped.
+  if (options.resume && result.conversationId !== options.resume) {
+    throw new ConfigError(`agy has no conversation "${options.resume}", so it started a new one. Its answer is not shown.`, {
+      suggestion: "Pass the ID from the [conversation] line of an earlier /gemini:ask answer, or ask without --resume."
+    });
+  }
+  const conversationId = result.conversationId ?? null;
   const deniedActions = result.deniedActions ?? [];
   const timedOut = Boolean(result.timedOut);
   if (options.json) {
     process.stdout.write(
       JSON.stringify(
-        { model, response: result.response, tokens: result.tokens, deniedActions, timedOut },
+        { model, conversationId, response: result.response, tokens: result.tokens, deniedActions, timedOut },
         null,
         2
       ) + "\n"
     );
     return;
   }
-  process.stdout.write(renderAskResult({ response: result.response, deniedActions, timedOut }));
+  process.stdout.write(renderAskResult({ response: result.response, deniedActions, timedOut, conversationId }));
 }
 
 function printUsage() {
@@ -683,7 +709,7 @@ function printUsage() {
       "Usage:",
       "  node scripts/gemini-companion.mjs setup [--json]",
       "  node scripts/gemini-companion.mjs review [--model <id>] [--json] [--timeout-ms <n>] [focus text...]  (content to review read from stdin)",
-      "  node scripts/gemini-companion.mjs ask [--model <id>] [--file <path>]... [--dir <folder>]... [--timeout-ms <n>] [--json] [prompt...]  (prompt from arguments and/or stdin)",
+      "  node scripts/gemini-companion.mjs ask [--model <id>] [--file <path>]... [--dir <folder>]... [--prompt-file <path>] [--resume <conversation-id>] [--timeout-ms <n>] [--json] [prompt...]  (prompt from arguments, plus --prompt-file or stdin)",
       ""
     ].join("\n")
   );

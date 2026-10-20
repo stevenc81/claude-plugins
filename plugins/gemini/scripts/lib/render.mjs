@@ -143,11 +143,11 @@ export function renderReviewResult({
   if (sourceCount > 0) {
     lines.push(
       `[grounding] ${sourceCount} source URL${sourceCount === 1 ? "" : "s"} cited. ` +
-        "agy does not report tool calls; rely on claim sources for evidence."
+        "The plugin does not count tool calls; rely on claim sources for evidence."
     );
   } else {
     lines.push(
-      "[grounding] No claim sources cited and agy does not report tool calls. Treat results as ungrounded."
+      "[grounding] No claim sources cited, and the plugin does not count tool calls. Treat results as ungrounded."
     );
   }
   if (refused) lines.push(`[grounding] agy refused these tools: ${refused}.`);
@@ -198,13 +198,15 @@ function formatQuota(quota) {
   return quota.argon ? `${flash}; ${part("Argon weekly", quota.argon.weekly)}` : flash;
 }
 
-export function renderAskResult({ response, deniedActions = [], timedOut = false }) {
+// The last line names the conversation, which `ask --resume <id>` continues.
+export function renderAskResult({ response, deniedActions = [], timedOut = false, conversationId = null }) {
   const text = String(response ?? "");
   const notes = [];
   if (!text.trim()) notes.push("[note] The model returned no text.");
   const refused = describeDeniedActions(deniedActions);
   if (refused) notes.push(`[note] agy refused these tools: ${refused}.`);
   if (timedOut) notes.push("[note] agy hit its time limit, so this answer was cut off.");
+  if (conversationId) notes.push(`[conversation] ${conversationId}`);
   if (notes.length === 0) return text;
   const body = text && !text.endsWith("\n") ? `${text}\n` : text;
   return `${body}${body ? "\n" : ""}${notes.join("\n")}\n`;
