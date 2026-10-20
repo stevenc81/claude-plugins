@@ -33,7 +33,7 @@ Use the table as the default, not as a fixed rule.
 3. For an independent check, use the second choice. It is always from a different vendor than the first choice.
 4. Split the work by strength, not evenly.
 5. If no row fits, use the nearest row.
-6. If a row says "no clear winner", pick by tools. Claude teammates have the full Claude Code tools. Codex reads any file and runs code. Gemini reads the web and the files and folders you pass to it, and it does not run code.
+6. If a row says "no clear winner", pick by tools. Claude teammates have the full Claude Code tools. Codex reads any file and runs code. Gemini reads the web and the files and folders you pass to it, and it runs no code or commands.
 7. If a job fails, follow "Usage limits".
 
 | Job | First choice | Second choice | Why | Confidence |
@@ -109,8 +109,8 @@ A teammate starts with no context. Start every teammate prompt with this brief:
 - Gemini fact check: `/gemini:review --model gemini-4-argon-high [focus]`. Always pass `--model`: an older plugin version in a session can default to Flash.
 - Gemini, other jobs: write the prompt to `<temp>/prompt-<job>.md` first. Then run `/gemini:ask --model <id> --prompt-file <temp>/prompt-<job>.md`. This is the same pattern as for Codex.
   - Always pass `--model`. Without it, the plugin uses `gemini-3.8-flash-medium`.
-  - Pass files, images, audio or video with `--file <path>`. Pass a source folder with `--dir <folder>`, which can repeat. The folders can be anywhere. Gemini's file tool reads only inside them. Gemini lists and searches with `ls` and `grep`, which can reach any path, so the plugin's prompt tells it to stay inside.
-  - The plugin takes a prompt of up to 720,000 bytes, about 165k tokens. The cap covers the whole prompt that the plugin builds: the prompt file, the question, the file and folder lists, and a tool rule of about 280 bytes (460 with `--dir`). So keep the prompt file a few KB below it. The plugin sends a long prompt in parts, and fails if `agy` compacts the conversation. For a long document, pass the question after `--`, so it comes after the document. Pass larger inputs with `--file`, which Gemini reads in pages.
+  - Pass files, images, audio or video with `--file <path>`. Pass a source folder with `--dir <folder>`, which can repeat. The folders can be anywhere. Gemini's file tool reads only inside them, and only by full path: Gemini cannot list or search a folder, and it runs no commands. So name the files to read in the prompt.
+  - The plugin takes a prompt of up to 720,000 bytes, about 165k tokens. The cap covers the whole prompt that the plugin builds: the prompt file, the question, the file and folder lists, and a tool rule of about 360 bytes. So keep the prompt file a few KB below it. The plugin sends a long prompt in parts, and fails if `agy` compacts the conversation. For a long document, pass the question after `--`, so it comes after the document. Pass larger inputs with `--file`, which Gemini reads in pages.
   - For a Gemini job with follow-ups, pass `--resume <conversation-id>`. Take the ID from the `[conversation]` line of the last answer. Attach the files and folders again on each turn.
   - Use `--background` for research or large `--dir` jobs. A run in the foreground stops after 9 minutes.
   - The plugin README has the full rules, including how to let Gemini open web pages.

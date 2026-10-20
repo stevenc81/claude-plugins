@@ -1,6 +1,6 @@
 """Render an SVG to a PNG beside it, at 2x, and print the PNG's path and size.
 
-Usage: uv run --offline --no-project --python 3.12 --with resvg-py python png.py <file.svg>
+Usage: uv run --offline --no-build --no-project --python 3.12 --with-requirements png.lock.txt python png.py <file.svg>
 """
 
 import struct

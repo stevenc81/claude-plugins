@@ -58,7 +58,7 @@ A 3-minute video takes about 5 seconds to prepare. Its frames use about 300 MB u
 
 - macOS only, because of `afplay`.
 - One video plays at a time. There is no seek.
-- The skill gets its Python packages from PyPI through `uv`, with no fixed versions. A bad release of one of them would run on your machine.
+- The skill gets its Python packages from PyPI through `uv`. Every package, including indirect ones, has an exact version in `skills/visual/scripts/*.lock.txt`, and the Kokoro model has a fixed Hugging Face revision. There are no hashes, because `uv run` does not check them, so a replaced file under the same version would not be caught. Build tools for the packages that build from source (pycairo, srt, docopt) are fixed in `build.lock.txt`; `uv run` ignores build constraints, so `setup.sh` (run once per machine, online) builds them with `uv pip install` first and `uv run` reuses the built wheels from the cache. To update, edit the matching `.txt` file and run the `uv pip compile` command at the top of its `.lock.txt` file.
 - The picture size assumes a terminal cell twice as tall as it is wide, which fits Iosevka in Ghostty. If a circle shows as an oval, change `CELL_ASPECT` in `hooks/register.tsx`.
 
 ## Tests

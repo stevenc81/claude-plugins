@@ -48,19 +48,14 @@ const MAX_ASK_PROMPT_BYTES = 720_000;
 // Below this, a fallback review run would be cut off before it could finish.
 const MIN_FALLBACK_MS = 60_000;
 // Headless agy cannot ask for permission, so one refused tool ends the run with
-// no answer at all. Shell commands and file writes are refused. Subagents run
-// with no allow rule, so the hook denies them (see makeNeutralCwd). Page reads
-// work only if the user allows read_url in their agy settings.
-const NO_OTHER_TOOLS =
-  "write files or start subagents: this run cannot ask for permission, and a refused tool ends it with no answer.";
-export const ASK_TOOL_RULE = `Tools: use web search, and open web pages only if you need to. To read local files, use your file-reading tool with the paths given above. Never run shell commands, ${NO_OTHER_TOOLS}`;
-// agy has no tool to list or search a folder. With --dir, the user's agy
-// settings must allow `ls` and `grep`. agy then still refuses pipes and chains,
-// but runs a redirect into the workspace, so a hook denies anything but one
-// plain ls or grep (see makeNeutralCwd).
-export const ASK_DIR_TOOL_RULE = `Tools: use web search, and open web pages only if you need to. To read local files, use your file-reading tool. Stay inside the folders and files given above. To list a folder, run \`ls <folder>\`. To search, run \`grep -rn <text> <folder>\`. Run each as one plain command, with no pipes, \`&&\`, \`;\`, redirects or \`$(...)\`. Never run other shell commands, ${NO_OTHER_TOOLS}`;
-export const LIST_SEARCH_RULES = ["command(ls)", "command(grep)"];
-// The oldest agy on which the command hook was tested.
+// no answer at all. agy refuses file writes, and commands that the user's agy
+// rules do not allow. The hook denies every command and subagent (see
+// makeNeutralCwd). Page reads work only if the user allows read_url in their
+// agy settings. agy's file tool cannot list or search a folder, so Gemini
+// reads files in a --dir folder only by their full path.
+export const ASK_TOOL_RULE =
+  "Tools: use web search, and open web pages only if you need to. To read a local file, use your file-reading tool with its full path, for a file or a file inside a folder given above. You cannot list or search a folder. Never run shell commands, write files or start subagents: this run cannot ask for permission, and a refused tool ends it with no answer.";
+// The oldest agy on which the hook was tested.
 export const MIN_DIR_AGY_VERSION = [1, 4, 2];
 
 // True when `version` holds x.y.z at or above `min`. No version counts as no.
@@ -73,20 +68,69 @@ function isAtLeast(version, min) {
   return true;
 }
 
-let agySettingsPath = path.join(os.homedir(), ".gemini", "antigravity-cli", "settings.json");
-/** Test-only hook: point the settings check at another file. */
-export function setAgySettingsPathForTest(p) {
-  agySettingsPath = p ?? path.join(os.homedir(), ".gemini", "antigravity-cli", "settings.json");
+// Opens a regular file, given as an absolute path, to read. A symlink can pass
+// off another file, such as a secret, as an input: `bundle/data -> ~/.aws`. So
+// a folder in the path may be a link only when root owns it, as the system
+// links /tmp, /var and /etc on macOS. O_NOFOLLOW refuses a link as the last
+// part. A folder could still be swapped for a link between the walk and the
+// open, but that needs an attacker who can change the folders while the plugin
+// runs. O_NONBLOCK keeps a named pipe from blocking the open. The check and the
+// read use the same descriptor, so the file cannot be swapped in between.
+function openRegularFile(file, label) {
+  let folder = path.parse(file).root;
+  for (const part of path.dirname(file).split(path.sep).filter(Boolean)) {
+    folder = path.join(folder, part);
+    let st;
+    try {
+      st = fs.lstatSync(folder);
+    } catch {
+      break; // a missing folder: the open below says so
+    }
+    if (st.isSymbolicLink() && st.uid !== 0) {
+      throw new ConfigError(`${label} path goes through a symlink: ${folder}`, {
+        suggestion: "Pass the real path, with no links that a user made."
+      });
+    }
+  }
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch (err) {
+    if (err.code === "ELOOP") {
+      throw new ConfigError(`${label} is a symlink: ${file}`, { suggestion: "Pass the real file, not a link to it." });
+    }
+    const why = err.code === "ENOENT" ? "not found" : `cannot be opened (${err.code})`;
+    throw new ConfigError(`${label} ${why}: ${file}`, { suggestion: "Check the path and rerun /gemini:ask." });
+  }
+  if (!fs.fstatSync(fd).isFile()) {
+    fs.closeSync(fd);
+    throw new ConfigError(`${label} is not a regular file: ${file}`, { suggestion: "Pass a regular file." });
+  }
+  return fd;
 }
 
-// True when the agy settings allow both `ls` and `grep`. A missing or broken
-// file counts as no.
-function allowsListAndSearch() {
+function readRegularFile(file, label) {
+  const fd = openRegularFile(file, label);
   try {
-    const allow = JSON.parse(fs.readFileSync(agySettingsPath, "utf8"))?.permissions?.allow;
-    return Array.isArray(allow) && LIST_SEARCH_RULES.every((r) => allow.includes(r));
-  } catch {
-    return false;
+    return fs.readFileSync(fd, "utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function copyRegularFile(file, dest, label) {
+  const fd = openRegularFile(file, label);
+  try {
+    const out = fs.openSync(dest, "wx");
+    try {
+      const buf = Buffer.allocUnsafe(1 << 20);
+      let n;
+      while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) fs.writeSync(out, buf, 0, n);
+    } finally {
+      fs.closeSync(out);
+    }
+  } finally {
+    fs.closeSync(fd);
   }
 }
 
@@ -159,21 +203,23 @@ const COMMAND_GATE = fileURLToPath(new URL("./command-gate.mjs", import.meta.url
 const shellQuote = (s) => `'${s.replaceAll("'", `'\\''`)}'`;
 
 const hookDenialLog = (cwd) => path.join(cwd, ".agents", "denied.jsonl");
-// The tools the hook sees: commands, and subagents with the `schedule` tool
-// that waits for them. agy matches this regex against the tool name.
-export const GATED_TOOLS = "^(run_command|invoke_subagent|define_subagent|manage_subagents|browser_subagent|schedule)$";
+// The tools the hook denies, as regexes that agy matches against the tool
+// name: commands, and subagents with the `schedule` tool that waits for them.
+// A review needs only web search, so it also loses page reads.
+const DENIED = ["run_command", "invoke_subagent", "define_subagent", "manage_subagents", "browser_subagent", "schedule"];
+export const GATED_TOOLS = `^(${DENIED.join("|")})$`;
+export const REVIEW_GATED_TOOLS = `^(${[...DENIED, "read_url_content", "open_browser_url"].join("|")})$`;
 
-// agy loads .agents/hooks.json from its working folder. The hook denies
-// subagents, and lets agy run only one plain ls or grep command, or no
-// command at all when allowCommands is false (see command-gate.mjs).
-function makeNeutralCwd(prefix, allowCommands) {
+// agy loads .agents/hooks.json from its working folder. The hook denies every
+// tool that `matcher` names (see command-gate.mjs).
+function makeNeutralCwd(prefix, matcher) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  const gate = [process.execPath, COMMAND_GATE, hookDenialLog(dir), ...(allowCommands ? [] : ["no-commands"])];
-  const hook = { type: "command", command: gate.map(shellQuote).join(" "), timeout: 10 };
+  const command = [process.execPath, COMMAND_GATE, hookDenialLog(dir)].map(shellQuote).join(" ");
+  const hook = { type: "command", command, timeout: 10 };
   fs.mkdirSync(path.join(dir, ".agents"));
   fs.writeFileSync(
     path.join(dir, ".agents", "hooks.json"),
-    JSON.stringify({ "gemini-plugin-command-gate": { PreToolUse: [{ matcher: GATED_TOOLS, hooks: [hook] }] } })
+    JSON.stringify({ "gemini-plugin-command-gate": { PreToolUse: [{ matcher, hooks: [hook] }] } })
   );
   return dir;
 }
@@ -271,9 +317,9 @@ export async function handleReview(argv, { stdin = null } = {}) {
 
   // Evaluate the text in isolation: create an empty temp directory and use
   // that as the working directory so the agent has no repo to wander into
-  // when assessing claims. Its hook denies every command and subagent: a web
-  // page can hold instructions for the model.
-  const neutralCwd = makeNeutralCwd("gemini-review-cwd-", false);
+  // when assessing claims. Its hook denies every command, subagent and page
+  // read: a web page can hold instructions for the model.
+  const neutralCwd = makeNeutralCwd("gemini-review-cwd-", REVIEW_GATED_TOOLS);
 
   const agyVersion = binaryAvailableImpl("agy", ["--version"], { cwd: neutralCwd }).detail;
 
@@ -596,13 +642,7 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   // heredoc). With --prompt-file, stdin is not read.
   let bodyText;
   if (options["prompt-file"] != null) {
-    const promptFile = path.resolve(baseDir, options["prompt-file"]);
-    if (!fs.statSync(promptFile, { throwIfNoEntry: false })?.isFile()) {
-      throw new ConfigError(`Prompt file not found: ${promptFile}`, {
-        suggestion: "Check the --prompt-file path and rerun /gemini:ask."
-      });
-    }
-    bodyText = fs.readFileSync(promptFile, "utf8");
+    bodyText = readRegularFile(path.resolve(baseDir, options["prompt-file"]), "Prompt file");
   } else {
     bodyText = stdin != null ? stdin : process.stdin.isTTY ? "" : readAllStdinSync();
   }
@@ -615,13 +655,6 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   }
 
   const files = (options.file ?? []).map((f) => path.resolve(baseDir, f));
-  for (const file of files) {
-    if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) {
-      throw new ConfigError(`File not found: ${file}`, {
-        suggestion: "Check the --file path and rerun /gemini:ask."
-      });
-    }
-  }
   const dirs = (options.dir ?? []).map((d) => path.resolve(baseDir, d));
   for (const d of dirs) {
     if (!fs.statSync(d, { throwIfNoEntry: false })?.isDirectory()) {
@@ -630,15 +663,9 @@ export async function handleAsk(argv, { stdin = null } = {}) {
       });
     }
   }
-  // Without ls and grep, Gemini cannot find files in a folder, and a refused
-  // command ends the run with no answer. So fail before the run.
-  if (dirs.length > 0 && !allowsListAndSearch()) {
-    throw new ConfigError(`--dir needs agy to allow ls and grep, and ${agySettingsPath} does not.`, {
-      suggestion: `Add ${LIST_SEARCH_RULES.map((r) => `"${r}"`).join(" and ")} to "permissions": { "allow": [...] } in that file, then rerun.`
-    });
-  }
-  // With --dir, the command hook is the only thing that stops a redirect into
-  // the user's folders. An agy that ignores the hook would not say so.
+  // With --dir, the hook is the only thing that stops a command that the
+  // user's agy rules allow, such as `grep x > file`, from writing into the
+  // user's folders. An agy that ignores the hook would not say so.
   if (dirs.length > 0) {
     const version = binaryAvailableImpl("agy", ["--version"]).detail;
     if (!isAtLeast(version, MIN_DIR_AGY_VERSION)) {
@@ -657,11 +684,11 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   // --add-dir and read in place. agy keeps its own conversation history
   // elsewhere; only the temp folder is removed. So a --resume turn must attach
   // its files and folders again.
-  const cwd = makeNeutralCwd("gemini-ask-cwd-", true);
+  const cwd = makeNeutralCwd("gemini-ask-cwd-", GATED_TOOLS);
   let result;
   try {
     const copies = files.map((f, i) => path.join(cwd, `${i + 1}-${path.basename(f)}`));
-    files.forEach((f, i) => fs.copyFileSync(f, copies[i], fs.constants.COPYFILE_FICLONE));
+    files.forEach((f, i) => copyRegularFile(f, copies[i], "File"));
     let suffix = "";
     if (copies.length > 0) {
       suffix += `\n\nFiles for this request (absolute paths):\n${copies.map((f) => `- ${f}`).join("\n")}`;
@@ -669,7 +696,7 @@ export async function handleAsk(argv, { stdin = null } = {}) {
     if (realDirs.length > 0) {
       suffix += `\n\nFolders for this request (absolute paths):\n${realDirs.map((d) => `- ${d}`).join("\n")}`;
     }
-    suffix += `\n\n${realDirs.length > 0 ? ASK_DIR_TOOL_RULE : ASK_TOOL_RULE}`;
+    suffix += `\n\n${ASK_TOOL_RULE}`;
     let prompt = [question, body].filter(Boolean).join("\n\n") + suffix;
     if (byteLength(prompt) > MAX_ASK_PROMPT_BYTES) {
       throw new ConfigError(

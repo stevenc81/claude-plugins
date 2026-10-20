@@ -1,6 +1,6 @@
 """Make one wav per beat with Kokoro (mlx-audio). Prints and saves durations and phrase starts.
 
-Usage: tts.sh beats.json outdir [voice]   (wraps this file with its dependencies)
+Usage: tts.sh beats.json outdir [voice]   (tts.sh --setup downloads everything once; wraps this file with its dependencies)
 beats.json: [{"id": "b01", "text": ["Phrase for step one.", "Phrase for step two."]}, ...]
   "text" is a list of phrases, one per animation step (a plain string counts as one phrase).
 Writes outdir/<id>.wav, outdir/durations.json ({"b01": 6.4, ...})
@@ -10,6 +10,8 @@ import json, os, re, sys, wave
 import numpy as np
 from mlx_audio.tts.utils import load_model
 
+MODEL = "mlx-community/Kokoro-82M-bf16"
+MODEL_REVISION = "a71e4d38b236d968966a2002c4c895dbd12b1c3c"  # fixed Hugging Face commit
 SR = 24000
 LEAD = 0.35  # silence before the first phrase (covers the 0.3 s slide fade-out)
 GAP = 0.3    # silence between phrases; 0.15 after a comma
@@ -30,6 +32,10 @@ def trim(a):
     return a
 
 
+if sys.argv[1:] == ["--setup"]:  # the one online step: download the model, then stop
+    load_model(MODEL, revision=MODEL_REVISION)
+    sys.exit(0)
+
 beats = json.load(open(sys.argv[1]))
 out = sys.argv[2]
 voice = sys.argv[3] if len(sys.argv) > 3 else "af_heart"
@@ -40,7 +46,7 @@ for b in beats:
     if not re.fullmatch(r"[A-Za-z0-9_-]+", str(b["id"])):
         sys.exit(f"bad beat id {b['id']!r}: use only letters, digits, _ and -")
 
-model = load_model("mlx-community/Kokoro-82M-bf16")
+model = load_model(MODEL, revision=MODEL_REVISION)
 durations, starts = {}, {}
 for b in beats:
     phrases = [b["text"]] if isinstance(b["text"], str) else b["text"]

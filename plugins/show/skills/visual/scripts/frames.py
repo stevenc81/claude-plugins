@@ -1,6 +1,6 @@
 """Extract one still per beat, late in the beat so every item on screen is visible.
 
-Usage: uv run --offline --no-project --python 3.12 python frames.py video.mp4 outdir
+Usage: uv run --offline --no-build --no-project --python 3.12 python frames.py video.mp4 outdir
 Reads times.json next to the video (real beat start and end, written by the scene).
 Writes outdir/<beat id>.png, sampled 0.15 s before the beat ends, after its last animation.
 """

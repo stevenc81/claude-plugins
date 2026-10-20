@@ -1,0 +1,10 @@
+mlx-audio==0.5.8
+misaki==0.9.4
+num2words==0.5.14
+spacy==3.8.16
+phonemizer-fork==3.3.2
+espeakng-loader==0.2.4
+setuptools==80.10.2
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+# uv run does not check hashes in a requirements file (tested on uv 0.13.1), so the lock files have exact versions only.
+# sha256 of the wheel above, for a manual check: 1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85
