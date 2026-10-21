@@ -7,7 +7,7 @@ The Claude Code plugins I use every day, in one marketplace.
 | [orchestrate](plugins/orchestrate) | Runs a small team of Claude, Codex and Gemini agents, and picks a model for each job. |
 | [gemini](plugins/gemini) | Fact-checks a conversation with Gemini and live web search, through the Antigravity CLI. |
 | [show](plugins/show) | Shows pictures and plays narrated videos inline in the terminal, in Ghostty or kitty. |
-| [self-improve](plugins/self-improve) | Improves a folder or a live target, such as a Datadog dashboard, toward a goal in rounds, and tells you after each round if it got better or worse. |
+| [self-improve](plugins/self-improve) | Improves a folder or a live target toward a goal in rounds, and tells you after each round if it got better or worse. |
 
 ## Install
 
