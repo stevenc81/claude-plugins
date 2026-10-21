@@ -13,13 +13,15 @@ You give the skill a target, a goal and a number of rounds in your prompt. In Se
 
 Two reviews of one target can differ, so one round can move the score by noise alone.
 
-Before you start, read how to keep a way back in SKILL.md "Files". At the end, the skill keeps its temp folder in the session's scratchpad, so you can read the results. It guards against mistakes by its agents, not against a hostile or prompt-injected agent.
+Before you start, read the notes in SKILL.md "Setup", such as how to keep a way back. At the end, the skill keeps its temp folder in the session's scratchpad, so you can read the results. It guards against mistakes by its agents, not against a hostile or prompt-injected agent.
 
 ## What you need
 
 - Claude Code.
 - A target to improve: a folder, or a live target that a tool, such as an MCP server, can read and change.
-- macOS and Python 3. The skill also uses `sandbox-exec`, which macOS ships. Python 3 comes with the Xcode Command Line Tools: run `xcode-select --install` if it is missing.
+- Python 3. On macOS, it comes with the Xcode Command Line Tools: run `xcode-select --install` if it is missing.
+
+The skill is tested only on macOS.
 
 To use agents from other vendors through [orchestrate](../orchestrate), see SKILL.md "Team".
 
