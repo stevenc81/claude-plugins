@@ -2,7 +2,6 @@
   "name": "stevenc81",
   "description": "Claude Code plugins by stevenc81: multi-agent teams, Gemini fact checks, and inline pictures and videos.",
   "owner": { "name": "stevenc81" },
-  "allowCrossMarketplaceDependenciesOn": ["openai-codex"],
   "plugins": [
     { "name": "orchestrate", "source": "./plugins/orchestrate" },
     { "name": "gemini", "source": "./plugins/gemini" },

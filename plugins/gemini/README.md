@@ -19,9 +19,9 @@ When only Gemini can do a job in this setup, and Codex cannot, the plugin suppor
 ## Requirements
 
 - **Antigravity CLI** (`agy --version` must work). Tested on 1.4.3. The plugin relies on `--input-format=stream-json`, `--output-format=stream-json`, `--json-schema`, `--conversation` and `--disable-slash-commands`. I have not checked which older versions have them. An `agy` without one of them exits 2 with `flags provided but not defined`. Then run `agy update`. See https://antigravity.google
-- **Antigravity CLI 1.4.3 or later for `/gemini:ask --dir`.** That is the oldest version on which the hook was tested (see [The tool gate](#the-tool-gate)). An older `agy` could ignore the hook without a warning, so `--dir` fails before the run and tells you to run `agy update`.
+- **Antigravity CLI 1.4.3 or later.** That is the oldest version on which the hook was tested (`MIN_HOOK_AGY_VERSION` in `scripts/gemini-companion.mjs`, see [The tool gate](#the-tool-gate)). An older `agy` could ignore the hook without a warning, so every command reads `agy --version` first, and on an older one fails before any other `agy` call and tells you to run `agy update`. A newer `agy` runs, but `/gemini:setup` warns about it (see [`/gemini:setup`](#geminisetup)).
 - **Sign-in.** Run `agy -p hello` once interactively. The first call opens a browser for OAuth and writes the session under `~/.gemini/antigravity-cli/`
-- **Node.js 18.18 or later**
+- **Node.js 20 or later.** `npm test` passes on Node 20 and 22. On Node 18.20, 4 of 243 tests fail: 2 use a mock-timers call that Node 18 rejects, and 2 in `source-resolver.test.mjs` hang. I have not checked why those 2 hang, so I do not claim the plugin runs on Node 18.
 
 ## Install
 
@@ -33,14 +33,7 @@ When only Gemini can do a job in this setup, and Codex cannot, the plugin suppor
 
 Then run `/gemini:setup` to check that everything works.
 
-The plugin has no fixed version number. Claude Code uses the git commit as the version, so every push to `main` is a new version. To get the latest one:
-
-```bash
-claude plugin marketplace update stevenc81
-claude plugin update gemini@stevenc81
-```
-
-Then run `/reload-plugins`, or start a new session.
+To update the plugin, see [Updates](../../README.md#updates) in the repository README.
 
 ## Usage
 
@@ -63,14 +56,14 @@ The flags are `--model <id>` and `--no-fallback`. Anything else after `/gemini:r
 
 When another skill or agent calls `/gemini:review` and gives it text, it reviews exactly that text.
 
-The review always runs as a background task, and Claude Code tells you when it finishes. In October 2026, a review of three short claims took 93 seconds on Gemini 4 Argon and 219 seconds on Gemini 3.8 Flash. A review of six claims on Flash took 11.5 minutes. A foreground run stops after 9 minutes, and a fallback to Flash adds a second run. The run time depends on the number of claims, not the length of the text.
+In the main session, the review always runs as a background task, and Claude Code tells you when it finishes. A subagent runs it in the foreground with a 9-minute limit instead, because an idle subagent is not woken when its own background task ends (checked twice in October 2026). If that review is cut off, the subagent gives its caller the command to run in the background. In October 2026, a review of three short claims took 93 seconds on Gemini 4 Argon and 219 seconds on Gemini 3.8 Flash. A review of six claims on Flash took 11.5 minutes. A foreground run stops after 9 minutes, and a fallback to Flash adds a second run. The run time depends on the number of claims, not the length of the text.
 
 How it works:
 - Claude pipes the selected text to the companion script through a quoted heredoc. No temp files, no copy and paste.
 - The companion runs `agy` in an empty temp folder with the review prompt on stdin and the JSON schema (`--json-schema`).
 - The prompt tells the model to search the web for every claim, and to open a page that search returned when the search summary is not enough. It tells the model to treat page text as data. The [tool gate](#the-tool-gate) allows web search, page reads and `finish` (the tool that returns the schema answer). It denies every other tool: commands, subagents, the browser and all file reads. Your `agy` settings decide whether a page opens (see below). A hook denial does not end the run, and it shows in `deniedActions`.
 - Search often returns `vertexaisearch.cloud.google.com/grounding-api-redirect/...` links. The plugin resolves each one to the real page URL (one request each, in parallel, 5 seconds max). If that fails, it keeps the original link.
-- The report ends with a `[grounding]` footer. It counts the web searches that `agy` ran and how many succeeded, counts the cited sources, and lists any tools `agy` refused. `agy` streams each search step twice (ACTIVE, then DONE or ERROR), so the plugin counts each step once.
+- The report ends with a `[grounding]` footer. It counts the web searches that `agy` ran and how many succeeded, counts the cited source URLs, and lists any tools `agy` refused. `agy` streams each search step twice (ACTIVE, then DONE or ERROR), so the plugin counts each step once. The prompt requires a source for a `supported` verdict, but the schema does not check it. Only an `http` or `https` URL counts as a source, after spaces are trimmed. So the plugin changes a `supported` claim with no such URL to `uncertain` and says so in its `reasoning`, and then changes a `trustworthy` overall to `mixed`. This holds for the text and the `--json` output.
 - Input is capped at 40KB. Longer content is cut on a line boundary, and the report says so.
 
 Model: reviews run on `gemini-4-argon-high` by default. `--model <id>` picks another model from `agy models`. If the run fails, the plugin can retry once on `gemini-3.8-flash-high`. `--no-fallback` turns that retry off, for a caller that would discard a Flash result. See [Which model runs the review?](#which-model-runs-the-review) for the rules. The header and the `--json` output show which model answered and why a fallback happened.
@@ -87,12 +80,14 @@ Output states:
 | Success | `parsed` is an object, `parseError` is `null` | `review (N bytes)` |
 | Degraded | `parsed` is `null`, `parseError` says why, `rawOutput` holds any text the model sent | `review (N bytes, degraded)` |
 | Timed out | `timedOut` is `true`, `stopReason` is `"timeout"` | `review (N bytes, degraded)` plus a line saying the review was cut off |
+| Compacted | `compacted` is `true`: Gemini worked from a summary of its earlier steps | `review (N bytes, degraded)` plus a line saying so |
+| Ungrounded | `ungrounded` is `true`: the review has claims, but no web search succeeded. A `trustworthy` overall becomes `mixed` | `review (N bytes, degraded)` plus a line saying so |
 
 `model` is the model that answered. `requestedModel` is the model the plugin tried first. `fellBack` is `true` when Flash answered, and `fallbackReason` holds the error from the first run (otherwise `null`). A text report that fell back says so in the header and on the first line.
 
 `deniedActions` lists any tools `agy` refused. When a refusal left the model with no answer, `parseError` names the refused tools. `searches` is `{attempted, succeeded}`.
 
-The exit code is `0` in all three states, because the CLI ran. A nonzero exit means the plugin itself failed (spawn error, sign-in, unknown model, used-up quota, or a hard timeout). After a fallback, a nonzero exit means both models failed, and the error names both causes. To branch on answer quality, read `parseError` and `timedOut` from `--json` output.
+The exit code is `0` in these states, because the CLI ran. A nonzero exit means the plugin itself failed (spawn error, sign-in, unknown model, used-up quota, a hard timeout, or a time limit hit before Gemini wrote any text). After a fallback, a nonzero exit means both models failed, and the error names both causes. To branch on answer quality, read `parseError`, `timedOut`, `compacted` and `ungrounded` from `--json` output.
 
 ### `/gemini:ask`
 
@@ -112,30 +107,30 @@ Sends a prompt to a model and returns its answer exactly as the model wrote it.
 
 - `--model <id>` takes any ID from `agy models`. The default is `gemini-3.8-flash-medium`. An unknown ID fails with a message telling you to run `agy models`. `/gemini:ask` has no fallback model.
 - Gemini 4 Argon (`gemini-4-argon-low`, `-medium`, `-high`) uses its own weekly quota. `/gemini:review` uses the same quota, so Argon asks leave fewer Argon reviews.
-- The prompt can be up to 720,000 bytes, with its file and folder lists and the tool rule. That was about 165k tokens in a test.
-- `agy` 1.4.3 shows the model only the first 192,000 bytes of a message, counting its own wrapper of about 400 bytes. It drops the rest without an error. So a prompt over 190,000 bytes goes in parts of up to 180,000 bytes, cut at line ends, each in its own turn of one `agy` session. Each part asks Gemini to reply with only OK. The next part goes only after a plain reply. Any other reply, a refused tool or an error stops the run with an error. The last message holds the text from the arguments, the file and folder lists and the tool rule. Only its answer is returned. `tokens` counts the whole session.
+- The prompt can be up to 720,000 bytes, with its file and folder lists and the tool rule. That was about 165k tokens in a test. Pass larger inputs with `--file`: Gemini then reads only the pages it looks for.
+- `agy` 1.4.3 shows the model only the first 192,000 bytes of a message, counting its own wrapper of about 400 bytes. It drops the rest without an error. So a prompt over 190,000 bytes goes in parts of up to 180,000 bytes, cut at line ends, each in its own turn of one `agy` session. Each part asks Gemini to reply with only OK. The next part goes only after that reply, in any case, with spaces or a final period. Any other reply, a refused tool or an error stops the run with an error that names the part. The last message holds the text from the arguments, the file and folder lists and the tool rule. Only its answer is returned. `tokens` counts the whole session. `agy` applies `--json-schema` to every turn of a session, so with `--schema` the parts go in one session without the schema, and the last message goes with the schema into the same conversation, in a second session, in the time that is left. `tokens` then comes from the second session. I have not checked whether it counts the parts' turns, or tested this path live.
 - When a conversation grows past `agy`'s compaction threshold, `agy` replaces the earlier turns with a summary, without an error. Gemini then no longer has the whole input, so a prompt in parts that `agy` compacts fails with an error. Any run also fails when an error step comes before the compaction, or when a compacted run ends with an empty answer. That is how a too-large media file shows up (see [Media](#media)). Any other run that compacts returns its answer, with `compacted: true` in `--json` and a note after the answer.
 - Tested in October 2026: a 190,000-byte message arrived whole on `gemini-3.8-flash-low`, and a 1 MB message was cut to its first 192,000 bytes. A 719 KB prompt in 4 parts arrived whole on `gemini-3.8-flash-low` and `gemini-4-argon-low`, with codes at the start, in the middle, on both sides of a part edge and at the end. At the last turn, about 164k tokens were in context. A 1 MB prompt in 6 parts was compacted on Flash at part 5, so the cap is 720,000 bytes.
-- `--prompt-file <path>` reads the prompt from a file, so a long prompt needs no heredoc. The file is opened like a `--file` (see below), so a symlink is refused. Prompt text in the arguments goes before the file's text, and stdin is not read. When the prompt goes in parts, the argument text goes in the last message, after the document. So for a long document, pass the question in the arguments. To make Gemini read a whole document, put the document in the prompt.
+- `--prompt-file <path>` reads the prompt from a file, so a long prompt needs no heredoc. The file is opened like a `--file` (see below), so a symlink is refused. Prompt text in the arguments goes before the file's text, and stdin is not read. When the prompt goes in parts, the argument text goes in the last message, after the document. So for a long document, pass the question in the arguments. To make Gemini read a whole document, put the document in the prompt, but only one that is not private: a prompt leaves page reads on (see [The tool gate](#the-tool-gate)).
 - `--file <path>` can repeat. The plugin opens each file with `O_NOFOLLOW`, so a symlink as the last part of the path is refused. A link could otherwise pass off another file, such as a secret, as the input. A folder in the path may be a link only when root owns it, as the system links `/tmp`, `/var` and `/etc` on macOS. A link that a user made is refused, because it can point anywhere, such as `bundle/data -> ~/.aws`. The plugin checks that the open file is a regular file, and copies it through the same open file into the `files/` folder of the empty temp folder that `agy` runs in, so the file cannot be swapped in between. The [tool gate](#the-tool-gate) lets Gemini read those copies and nothing else from the file's folder. The prompt lists the paths of the copies. For text, `agy`'s file tool reads at most 800 lines or 46,080 bytes per call, so in a long file Gemini reads only the parts it looks for. Media goes in one call (see [Media](#media)).
 - `--resume <conversation-id>` continues an earlier ask. Every answer ends with a `[conversation] <id>` line. The plugin deletes its file copies after each ask, so pass `--file` and `--dir` again on each turn. If `agy` has no conversation with that ID, it starts a new one without the earlier turns. The plugin then fails and does not show that answer.
 - `--dir <folder>` gives Gemini read access to a folder, such as a source tree. It can repeat, and the folders can be anywhere, also `/` or your home folder. The caller chooses them. The plugin passes each folder to `agy` as `--add-dir`, and the prompt lists the folders. Gemini's file tool can read only inside these folders, and only by full path. `agy`'s own folder stays closed, also when a `--dir` folder holds it. Gemini cannot list or search a folder: `agy` lists `list_dir`, `grep_search` and `find_by_name`, but a headless model does not get them (agy 1.4.3, Flash low, two tests). Gemini runs no commands either, so name the files to read in the prompt. Without file names, Gemini guessed paths in a test and ended with no answer. `--dir` and `--file` can be used together.
-- `--schema <file>` takes a JSON Schema file and passes it to `agy` as `--json-schema`. The plugin checks the answer against the schema. An empty answer or one that does not fit fails the ask (exit 1): `agy` can report success with no structured output ([agy issue #1065](https://github.com/google-antigravity/antigravity-cli/issues/1065)). The text output is the JSON, pretty-printed, then the notes. The schema may use only `type` (one type name), `properties`, `required`, `additionalProperties` (true or false), `items`, `enum`, `minimum`, `description`, `title` and `$schema`, because the plugin checks only these. A schema with other keywords fails before the run. Tested live once (agy 1.4.3, Flash low): an image read into `{number, text_colour, confident}`.
-- `--json` returns `{model, conversationId, response, structuredOutput, images, tokens, deniedActions, timedOut, compacted}`. `structuredOutput` is the checked JSON with `--schema`, otherwise `null`. `images` lists the copied images with `--image-out`, otherwise `null`.
-- It runs in the foreground by default. `--background` runs it as a background task.
+- `--schema <file>` takes a JSON Schema file and passes it to `agy` as `--json-schema`. The plugin checks the answer against the schema. An empty answer or one that does not fit fails the ask (exit 1): `agy` can report success with no structured output ([agy issue #1065](https://github.com/google-antigravity/antigravity-cli/issues/1065)). The text output is the JSON, pretty-printed, then the notes. The schema may use only `type` (one type name), `properties`, `required`, `additionalProperties` (true or false), `items`, `enum`, `minimum`, `description`, `title` and `$schema`, because the plugin checks only these. A schema with other keywords fails before the run. Tested live once (agy 1.4.3, Flash low): an image read into `{number, text_colour, confident}`. A schema that the true answer cannot fit can still pass with a wrong value (Flash low, one test: the capital of France as `green` from an enum of red and green), so give the schema a way out, such as an `"unknown"` enum value.
+- `--json` returns `{model, conversationId, response, structuredOutput, images, tokens, deniedActions, stopReason, timedOut, compacted}`. `stopReason` is `"timeout"` or `"end_turn"`, as in `/gemini:review`. `structuredOutput` is the checked JSON with `--schema`, otherwise `null`. `images` lists the copied images with `--image-out`, otherwise `null`.
+- It runs in the foreground by default. `--background` runs it as a background task, except in a subagent, which always runs it in the foreground (see [`/gemini:review`](#geminireview)).
 - `agy` runs in a fresh temp folder that is deleted afterwards. `agy`'s own saved conversations are left alone.
-- If `agy` refused a tool or the run timed out, a short note follows the answer.
-- The plugin tells Gemini to use web search, web pages and the local files it was given. It tells Gemini never to run shell commands, write files or start subagents. The one exception is `--image-out` (see below). When `agy` runs without a terminal, it cannot ask you for permission. So one refused tool ends the run, and the answer is empty.
-- Each run is gated by the [tool gate](#the-tool-gate). An ask allows web search, page reads (if your `agy` settings allow them), `finish`, and the file reader inside its own `files/` folder and the `--dir` folders.
+- If `agy` refused a tool or the run timed out, a short note follows the answer. A run that hits the time limit before Gemini writes any text fails (exit 1). The error says to run it with `--background`, or to split the job.
+- The plugin tells Gemini to use web search, web pages (where the [tool gate](#the-tool-gate) allows them) and the local files it was given. It tells Gemini never to run shell commands, write files or start subagents. The one exception is `--image-out` (see below). When `agy` runs without a terminal, it cannot ask you for permission. So a tool that `agy`'s own rules refuse ends the run, and the answer is empty. A tool that the [tool gate](#the-tool-gate) denies does not end the run.
+- Each run is gated by the [tool gate](#the-tool-gate). It lists the tools that each kind of ask allows.
 - By default, `agy` also refuses to open web pages. Research jobs, such as reading Reddit threads, need page reads. To allow them, add this to `~/.gemini/antigravity-cli/settings.json` (but see the Flash note below):
 
   ```json
   "permissions": { "allow": ["read_url(*)"] }
   ```
 
-  Put all rules in one `allow` list. Gemini can then open any page it finds, in `/gemini:ask` and in `/gemini:review`. Without this rule, a page read in a review can end the review with no answer. Gemini still cannot write files. Its file tool cannot read outside the given files and folders. A research run can take 8 minutes or more, so use `--background` for it.
+  Put all rules in one `allow` list. Gemini can then open any page it finds, in `/gemini:review` and in the asks that the [tool gate](#the-tool-gate) lets open pages. Without this rule, a page read in a review can end the review with no answer. Gemini still cannot write files. Its file tool cannot read outside the given files and folders. A research run can take 8 minutes or more, so use `--background` for it.
 - Flash note (agy 1.4.3, October 2026, with `read_url(*)` allowed): `gemini-3.8-flash-low` and `gemini-3.8-flash-medium` were not offered a tool that reads a URL. Asked to list their tools, they named 12, with `search_web` but no `read_url_content`. Asked to open a page, they answered that they had no such tool. This held for an ask, an ask with `--schema` (as a review runs), a raw `agy -p` run in text mode, and the version of this plugin before the tool gate. A review on Flash low ran 9 searches and opened no page. `agy`'s init event still lists `read_url_content`. So on Flash, Gemini works from search summaries only. Not checked on Argon. A research run on 13 October 2026 (commit 4928de3) did try to open a page. I have not checked which `agy` version and model it used.
-- `--image-out <folder>` makes images. Only in such a run, Gemini may start one subagent: `agy`'s `image-generator`, which makes the image with Nano Banana 2. The folder must exist, and no part of its path may be a link that a user made. After the run, the plugin copies the new image files (PNG, JPEG, WebP, GIF) that `agy` saved for this conversation under `~/.gemini/antigravity-cli/brain/<conversation-id>/` into the folder. It opens each one with `O_NOFOLLOW`, skips links, and never overwrites a file: if the folder already has a file of the same name, the ask fails and names it. It leaves `agy`'s folder as it is. The answer lists each copy on an `[image] <path>` line, and `--json` has them in `images`. A run that makes no image fails (exit 1). The image tool fails on some plans ([agy issue #1202](https://github.com/google-antigravity/antigravity-cli/issues/1202)). Tested on `agy` 1.4.3 with Flash low: a poster, and an image made from an attached reference image.
+- `--image-out <folder>` makes images. Only in such a run, Gemini may start subagents of one type: `agy`'s `image-generator`, which makes the image with Nano Banana 2 (see [The tool gate](#the-tool-gate) for what it may do). The folder must exist, and no part of its path may be a link that a user made. After the run, the plugin copies the new image files (PNG, JPEG, WebP, GIF) that `agy` saved for this conversation under `~/.gemini/antigravity-cli/brain/<conversation-id>/` into the folder. It opens each one with `O_NOFOLLOW`, skips links, and never overwrites a file: if the folder already has a file of the same name, the ask fails and names it. It leaves `agy`'s folder as it is. The answer lists each copy on an `[image] <path>` line, and `--json` has them in `images`. Use that path, not a `file://` link in the answer text, which points to `agy`'s own folder. A run that makes no image fails (exit 1). The image tool fails on some plans ([agy issue #1202](https://github.com/google-antigravity/antigravity-cli/issues/1202)). Tested on `agy` 1.4.3 with Flash low: a poster, and an image made from an attached reference image.
 
 ### The tool gate
 
@@ -143,11 +138,13 @@ Each run loads a hook from its temp folder, `.agents/hooks.json`, with the match
 
 | Run | Allowed | Also denied |
 |---|---|---|
+| `/gemini:setup` | nothing | every tool |
 | `/gemini:review` | `search_web`, `read_url_content`, `finish` | every file read |
-| `/gemini:ask` | `search_web`, `read_url_content`, `finish`, and the file reader (`read_file`, `view_file`) with the path check below | — |
+| `/gemini:ask` with no `--file`, `--dir` or `--resume` | `search_web`, `read_url_content`, `finish`, and the file reader (`read_file`, `view_file`) with the path check below | — |
+| `/gemini:ask` with `--file`, `--dir` or `--resume` | `search_web`, `finish`, and the file reader with the path check below | `read_url_content` |
 | `/gemini:ask --image-out` | the `/gemini:ask` tools; `invoke_subagent` when every subagent is of type `image-generator` and names no `Workspace`; `generate_image`, whose reference images (`ImagePaths`) pass the path check; `send_message` only to the conversation that started the subagent, which the subagent uses to answer | every other subagent type |
 
-Every run denies commands, file writes, `schedule`, the browser tools and MCP tools, and every subagent except the one above. Your `agy` rules may allow commands such as `grep` for your own use, and a web page or a file can tell Gemini to run one: for example, to read a secret and send it out in a URL. A page can also hold instructions for the model, but a search result can too, and a search query can already carry data out. So the gate keeps secrets out of reach instead: a review reads no local file, and an ask reads only inside its roots.
+Every run denies commands, file writes, `schedule`, the browser tools and MCP tools, and every subagent except the one above. Your `agy` rules may allow commands such as `grep` for your own use, and a web page or a file can tell Gemini to run one: for example, to read a secret and send it out in a URL. So the gate keeps secrets out of reach: a review reads no local file, and an ask reads only inside its roots. An ask with `--file` or `--dir` also cannot open pages, because text in a file can tell Gemini to open an attacker's URL that holds the file's content. A `--resume` ask cannot open pages either, with or without files, because the plugin cannot know what earlier turns read. A research conversation that must open pages starts a new ask instead. These asks keep web search, because its queries go to Google, which already gets the files. A job that needs both local files and page reads runs as two asks: first an ask with no files reads the pages, then its answer goes into the prompt of the ask with the files. The prompt itself does not turn page reads off, whether it comes from the arguments, stdin or `--prompt-file`, so a research job can still open pages. A private document, or text taken from one, therefore goes in `--file` or `--dir`, never in the prompt of an ask that can open pages.
 
 The hook also sees the tool calls of the `image-generator` subagent, which runs in its own conversation (agy 1.4.3, Flash low, two tests). Its read of a file outside the roots and its reference image outside the roots were denied. Its attached reference image was allowed. It had no command or page tool. A subagent of type `self` was denied.
 
@@ -155,7 +152,7 @@ The path check: the gate resolves each path that a file-tool call names to its r
 
 An allowed tool still goes through `agy`'s own rules: "allow" hands the call on. So your settings decide page reads. If the hook fails, `agy` denies the call. A hook denial does not end the run. The plugin adds each denied command to `deniedActions` as `{"action": "command", "display_name": "<the command>"}`, each denied file read as `{"action": "read_file", "display_name": "<the path>"}`, and any other denied call as `{"action": "<tool>"}`, so it shows in the refused-tools note.
 
-The stream and the hook name the file reader `read_file`, with a `Path` argument. `agy`'s init event and docs call it `view_file`, with `AbsolutePath`. The gate accepts both. Tested on `agy` 1.4.3 with Flash low: reads inside `--dir` and of attachments worked for text, PNG, JPEG, WebP, PDF, MP4 and M4A. A file outside the roots, a symlink out of a root, the `.agents` folder and the `agy` transcript were denied. If you added the rules `command(ls)` and `command(grep)` for an older version of this plugin, the plugin no longer needs them.
+The stream and the hook name the file reader `read_file`, with a `Path` argument. `agy`'s init event and docs call it `view_file`, with `AbsolutePath`. The gate accepts both. Tested on `agy` 1.4.3 with Flash low: reads inside `--dir` and of attachments worked for text, PNG, JPEG, WebP, PDF and MP4, and for M4A as an attachment. A file outside the roots, a symlink out of a root, the `.agents` folder and the `agy` transcript were denied. If you added the rules `command(ls)` and `command(grep)` for an older version of this plugin, the plugin no longer needs them.
 
 ### Media
 
@@ -166,7 +163,7 @@ Gemini reads media that you pass with `--file`, or that sits in a `--dir` folder
 | Images | PNG, JPEG, WebP, GIF | — |
 | PDF | text, and a chart that exists only as pixels | — |
 | Video | MP4, WebM, MOV, MKV, AVI: frames. The audio track came through in MP4 and WebM (MOV, MKV and AVI were tested without sound) | YouTube and other URLs: the model only searches the web. Download the video first |
-| Audio | MP3, WAV, OGG (Opus); M4A, because the plugin copies it as `.mp4` | AAC and FLAC: `agy` refuses them by extension. The plugin refuses them before the run. Convert first: `ffmpeg -i x.flac x.mp3` |
+| Audio | MP3, WAV, OGG (Opus); M4A with `--file`, because the plugin copies it as `.mp4` | AAC and FLAC: `agy` refuses them by extension. The plugin refuses them before the run. Convert first: `ffmpeg -i x.flac x.mp3`. An M4A in a `--dir` folder keeps its name, because the plugin renames only `--file` copies. I have not checked whether `agy` reads it there, so pass it with `--file` |
 
 - **Size.** The plugin refuses a `--file` media file over 24,000,000 bytes before the run. It checks the size on the open file. A 24.4 MB video worked and a 28.0 MB video failed: `agy` compacted the conversation and the model lost the task. This was measured for video only. A too-large file in a `--dir` folder cannot be checked first, so the run fails after the compaction (see the compaction rule above). Cut or shrink a large video with `ffmpeg`, for example `ffmpeg -i in.mp4 -ss 0 -t 60 -c copy part1.mp4`.
 - **Length is not the limit.** A 5-minute video of 0.3 MB worked. It cost about 90 input tokens per second, in one test.
@@ -181,11 +178,13 @@ Gemini reads media that you pass with `--file`, or that sits in a `--dir` folder
 /gemini:setup --json
 ```
 
-Setup spends one model call. It sends a canary prompt ("Reply with the single word OK") and checks that the reply echoes it. That proves sign-in works and the prompt really reached the model. A CLI change that makes `agy` exit 0 without seeing the prompt shows up as `Prompt check: FAILED`.
+Setup runs `agy` in an empty temp folder, and the [tool gate](#the-tool-gate) allows no tool there, so the canary cannot read or run anything. It spends one model call. It sends a canary prompt ("Reply with the single word OK") and checks that the reply echoes it. That proves sign-in works and the prompt really reached the model. A CLI change that makes `agy` exit 0 without seeing the prompt shows up as `Prompt check: FAILED`.
 
 Two free checks run alongside it:
 - **Model check** reads `agy models` and looks for the review model (Argon), the fallback model (Flash) and the `/gemini:ask` default. `ok` means all three are listed. `degraded` means one is missing: reviews still run on the other review model, or only `/gemini:ask` without `--model` is affected. `FAILED` (exit 1) means both review models are missing. `unknown` means `agy models` could not run. `--json` reports each model under `models.primary`, `models.fallback` and `models.ask`.
 - **Gemini quota** reads `agy -p /usage` and shows the remaining percent with reset times: the weekly and 5-hour limits for Gemini Flash, and the weekly limit for Gemini 4 Argon. If that call fails, setup still runs and shows the quota as unknown. `--json` includes it as `quota`, with Argon under `quota.argon` (`null` when `agy` does not report Argon).
+
+When `agy --version` is newer than the tested version (`TESTED_AGY_VERSION` in `scripts/gemini-companion.mjs`), setup prints a warning that names the smoke test to run (see [Development](#development)). It does not fail. `--json` has the warning in `versionWarning` (otherwise `null`). `--json` always has `nextSteps`, the same steps as the text report (empty when all is well), and `promptDetail` when the canary ran. When setup fails before the canary or the canary call fails, `--json` prints the fields of the text report.
 
 ## Configuration
 
@@ -193,7 +192,7 @@ Environment variables:
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS` | 1200000 (20 minutes) | Passed to `agy` as `--print-timeout`. When it runs out, `agy` returns what it has so far, and the plugin marks the result as timed out. The plugin's own hard limit is 30 seconds longer, so that partial answer can arrive first. The companion flag `--timeout-ms <n>` overrides it. Foreground runs of `/gemini:review` and `/gemini:ask` pass `--timeout-ms 540000` (9 minutes), to finish before Claude Code's 10-minute limit on a foreground command. |
+| `GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS` | 1200000 (20 minutes) | Passed to `agy` as `--print-timeout`. When it runs out, `agy` returns what it has so far, and the plugin marks the result as timed out. If Gemini has written no text yet, the run fails. The plugin's own hard limit is 30 seconds longer, so that partial answer can arrive first. The companion flag `--timeout-ms <n>` overrides it. Foreground runs of `/gemini:review` and `/gemini:ask` pass `--timeout-ms 540000` (9 minutes), to finish before Claude Code's 10-minute limit on a foreground command. |
 | `GEMINI_PLUGIN_CC_RESOLVE_SOURCES` | (unset) | Set to `0` to keep grounding redirect links as they are. |
 | `GEMINI_PLUGIN_CC_RESOLVE_SOURCES_TIMEOUT_MS` | 5000 | Time limit for resolving each redirect link. |
 | `GEMINI_PLUGIN_CC_DEBUG` | (unset) | Set to `1` to include the underlying cause in error output. |
@@ -231,7 +230,7 @@ The fallback rules:
 - A sign-in error does not fall back, because Flash would fail the same way.
 - A hard timeout does not fall back, because it used the whole time budget.
 - The timeout is one budget for both runs. Flash gets only the time that is left. If less than 60 seconds are left, the plugin skips Flash and reports the Argon error.
-- A run that `agy` cut off at its own time limit is not an error. The plugin returns that partial result and does not fall back.
+- A run that `agy` cut off at its own time limit, with a usable partial result, is not an error. The plugin returns that result, marked as timed out, and does not fall back. A cutoff before any answer is an error, and it does not fall back either.
 - The first error is never hidden. The report and `fallbackReason` show it.
 
 Why two models: Argon was faster in a test in October 2026 (93 seconds against 219 seconds for the same three claims). But Argon has only a weekly limit, separate from Flash. One review of three claims used about 1.4% of it. Flash keeps reviews working when the Argon limit runs out.
@@ -277,6 +276,14 @@ node tests/smoke-review.mjs
 ```
 
 This feeds a small synthetic response with deliberately false claims and asserts that (a) the agent returned at least one contradicted/uncertain verdict and (b) at least one claim cites a source URL.
+
+Run this after an `agy` update, on `gemini-3.8-flash-low` (about 30 seconds):
+
+```bash
+node tests/smoke-agy.mjs
+```
+
+It checks that a PNG made at run time reaches the model, that the tool gate denies a file read outside the allowed folders and lists it in `deniedActions`, and that a `--schema` answer fits. When it passes, raise `TESTED_AGY_VERSION`.
 
 ### Trying changes before you push
 

@@ -11,9 +11,8 @@ Raw slash-command arguments:
 `$ARGUMENTS`
 
 Core constraint:
-- This command is analysis-only.
-- Do not fix issues, edit files, or change your answer.
-- Your only job is to run the review and return Gemini's output verbatim to the user.
+- If the user called this command directly, your only job is to run the review and return Gemini's output verbatim, with no commentary before or after it. Do not fix issues, edit files, change your answer, or follow up on any finding.
+- If it runs inside a larger task (you are a subagent, or another skill called it), give the output to that task, then go on with the task.
 
 Input handling:
 - Determine what to review from the user's message and conversation context:
@@ -35,7 +34,8 @@ Building the command:
 - Example: for the raw arguments `--model gemini-4-argon-high --no-fallback check the dates`, the arguments are `--model 'gemini-4-argon-high' --no-fallback -- 'check the dates'`.
 
 Flow:
-- Always launch the review with `Bash` in the background, even when the raw arguments include `--wait`. A review of a few short claims can take more than 10 minutes, and a foreground `Bash` call stops at 10.
+- If you are a subagent, run the review in the foreground: see "Subagent flow" below. A subagent is not woken when its own background task ends, so its result would never come back.
+- Otherwise, always launch the review with `Bash` in the background, even when the raw arguments include `--wait`. A review of a few short claims can take more than 10 minutes, and a foreground `Bash` call stops at 10.
 - Use a quoted heredoc, so the content is piped in literally with no shell expansion:
 ```typescript
 Bash({
@@ -46,7 +46,14 @@ GEMINI_EOF_7Q2KX9WM`,
   run_in_background: true
 })
 ```
-- After launching, tell the user: "Gemini review started in the background. You will be notified when it finishes." Then stop. If you are a subagent, do not send your final report yet: a subagent sends only one report, so a report sent now loses the review output. You are woken when the task finishes.
-- When it finishes, return its stdout verbatim, exactly as-is.
-- Do not paraphrase, summarize, or add commentary before or after it.
-- Do not edit any file or follow up on any finding.
+- After launching, tell the user: "Gemini review started in the background. You will be notified when it finishes." Then stop.
+- When it finishes, return its stdout verbatim, exactly as-is. If the command exits nonzero, return the exit code and its stderr verbatim instead. The error and its next step are there, and stdout is empty.
+
+Subagent flow:
+- Run the same command in the foreground, with the `Bash` timeout 600000 (10 minutes) and `--timeout-ms 540000`. The review then ends by itself within 10 minutes, with a cut-off report or an error:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" review --timeout-ms 540000 -- 'check the "LTS" date' <<'GEMINI_EOF_7Q2KX9WM'
+<the full text of the content to review, verbatim>
+GEMINI_EOF_7Q2KX9WM
+```
+- Return its output as above. If the review was cut off or hit the time limit, also say so in your report, and give your caller the exact command to run in the background, without `--timeout-ms`.

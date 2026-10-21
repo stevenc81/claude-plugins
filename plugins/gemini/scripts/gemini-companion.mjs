@@ -11,7 +11,7 @@ import {
   runCommand as realRunCommand
 } from "./lib/process.mjs";
 import { renderPrompt, schemaPath } from "./lib/prompts.mjs";
-import { runReview as realRunReview, DEFAULT_PROMPT_TIMEOUT_MS } from "./lib/agy-runner.mjs";
+import { runReview as realRunReview, DEFAULT_PROMPT_TIMEOUT_MS, TIMEOUT_HINT, PART_ACK } from "./lib/agy-runner.mjs";
 import {
   parseReviewOutput,
   parseAgainstSchema,
@@ -79,25 +79,54 @@ const MIN_FALLBACK_MS = 60_000;
 // stays because, in October 2026 on gemini-3.8-flash-low, it gave 16 of 16
 // right audio answers on videos with sound against 14 of 16 without it, and
 // no invented audio on 4 silent videos either way.
-const TOOL_RULE_BASE =
-  "Tools: use web search, and open web pages only if you need to. To read a local file, use your file-reading tool with its full path, for a file or a file inside a folder given above. Your file tool returns images and PDFs, and video frames that can include sound, as media. You cannot list or search a folder.";
+const FILE_RULE =
+  "To read a local file, use your file-reading tool with its full path, for a file or a file inside a folder given above. Your file tool returns images and PDFs, and video frames that can include sound, as media. You cannot list or search a folder.";
 const NO_PERMISSION = "this run cannot ask for permission, and a refused tool ends it with no answer.";
-export const ASK_TOOL_RULE = `${TOOL_RULE_BASE} Never run shell commands, write files or start subagents: ${NO_PERMISSION}`;
 // With --image-out, one subagent type is allowed: agy makes images only
 // through its image-generator subagent (Nano Banana 2), not with a tool of
-// the main model.
-export const IMAGE_TOOL_RULE = `${TOOL_RULE_BASE} To make an image, start one subagent of type image-generator, with no workspace, and give it the whole image request. It saves the image. Never run shell commands, write files or start any other subagent: ${NO_PERMISSION}`;
-// The oldest agy on which the hook, with the matcher "*" and its path checks, was tested.
-export const MIN_DIR_AGY_VERSION = [1, 4, 3];
+// the main model. The rule asks for one subagent; the gate allows any number
+// of that type.
+const IMAGE_RULE =
+  "To make an image, start one subagent of type image-generator, with no workspace, and give it the whole image request. It saves the image.";
+// The tool rule at the end of an ask prompt. `pages` is false in a run that
+// gets ASK_LOCAL_TOOLS.
+export function toolRule({ pages = true, image = false } = {}) {
+  return [
+    pages ? "Tools: use web search, and open web pages only if you need to." : "Tools: use web search. This run cannot open web pages.",
+    FILE_RULE,
+    ...(image ? [IMAGE_RULE] : []),
+    `Never run shell commands, write files or start ${image ? "any other subagent" : "subagents"}: ${NO_PERMISSION}`
+  ].join(" ");
+}
+// The oldest agy on which the hook (matcher "*" and its path checks) was
+// tested. Every run needs at least this version, because an older agy could
+// ignore the hook without a warning.
+export const MIN_HOOK_AGY_VERSION = [1, 4, 3];
+// The newest agy that this plugin was tested on, with tests/smoke-agy.mjs.
+// /gemini:setup warns on a newer one, so that someone runs the smoke test and
+// then raises this number.
+export const TESTED_AGY_VERSION = [1, 4, 3];
+const SMOKE_TEST = fileURLToPath(new URL("../tests/smoke-agy.mjs", import.meta.url));
 
-// True when `version` holds x.y.z at or above `min`. No version counts as no.
-function isAtLeast(version, min) {
+// -1, 0 or 1 as the x.y.z in `version` is below, at or above `v`; null when
+// `version` holds no x.y.z.
+export function compareVersion(version, v) {
   const m = String(version).match(/(\d+)\.(\d+)\.(\d+)/);
-  if (!m) return false;
+  if (!m) return null;
   for (let i = 0; i < 3; i++) {
-    if (Number(m[i + 1]) !== min[i]) return Number(m[i + 1]) > min[i];
+    if (Number(m[i + 1]) !== v[i]) return Number(m[i + 1]) > v[i] ? 1 : -1;
   }
-  return true;
+  return 0;
+}
+
+// Fails when `version` is older than MIN_HOOK_AGY_VERSION. No version counts
+// as too old.
+function requireHookAgy(version) {
+  if ((compareVersion(version, MIN_HOOK_AGY_VERSION) ?? -1) < 0) {
+    throw new ConfigError(`This plugin needs agy ${MIN_HOOK_AGY_VERSION.join(".")} or later, and agy reports "${version}".`, {
+      suggestion: "Run `agy update`, then rerun."
+    });
+  }
 }
 
 // Opens a regular file, given as an absolute path, to read. A symlink can pass
@@ -172,7 +201,18 @@ function copyRegularFile(file, dest, label) {
     try {
       const buf = Buffer.allocUnsafe(1 << 20);
       let n;
-      while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) fs.writeSync(out, buf, 0, n);
+      while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
+        // A write can take fewer bytes than asked, so write the rest until all is written.
+        for (let off = 0; off < n; ) {
+          const w = fs.writeSync(out, buf, off, n - off);
+          if (w <= 0) throw new ConfigError(`${label} copy wrote 0 bytes: ${dest}`, { suggestion: "Check that the disk has free space, then rerun." });
+          off += w;
+        }
+      }
+    } catch (err) {
+      // The copy is new ("wx"), so it is removed: a cut copy must not look complete.
+      fs.rmSync(dest, { force: true });
+      throw err;
     } finally {
       fs.closeSync(out);
     }
@@ -258,14 +298,16 @@ const realOrResolved = (p) => {
 
 const hookDenialLog = (cwd) => path.join(cwd, ".agents", "denied.jsonl");
 // The tools each run allows. The hook denies every other tool (see
-// tool-gate.mjs). `finish` returns the --json-schema answer. Both runs may
-// search and open pages; the user's agy rules decide whether a page opens
-// (read_url). A page can hold instructions for the model, but search results
-// already can, and a search query can already carry data out. So the guard is
-// that no run can read a secret: a review reads no local file, and an ask
-// reads only inside its roots.
+// tool-gate.mjs). `finish` returns the --json-schema answer. The user's agy
+// rules decide whether an allowed page read opens (read_url). A review reads
+// no local file, and an ask reads only inside its roots. An ask with a --file
+// or --dir may not open pages: text in a file could make Gemini open an
+// attacker's URL that holds the file's content. Nor may a --resume ask, since
+// the plugin cannot know what earlier turns read. Both keep web search, whose
+// queries go to Google, which already gets the files.
 export const REVIEW_TOOLS = ["search_web", "read_url_content", "finish"];
 export const ASK_TOOLS = ["search_web", "read_url_content", "finish"];
+export const ASK_LOCAL_TOOLS = ["search_web", "finish"];
 // agy 1.4.3 lists the file reader as view_file, and streams and gates it as
 // read_file. Its init event also lists list_dir, grep_search and find_by_name,
 // but a headless model does not get them (live test, October 2026).
@@ -426,6 +468,7 @@ export async function handleReview(argv, { stdin = null } = {}) {
   let usedModel = requestedModel;
   let fallbackReason = null;
   try {
+    requireHookAgy(agyVersion);
     try {
       result = await runAgy({ ...runArgs, model: requestedModel });
     } catch (err) {
@@ -460,6 +503,10 @@ export async function handleReview(argv, { stdin = null } = {}) {
   }
 
   const parsed = parseReviewResult(result);
+  // Verdicts with no successful web search are Gemini's own view, so such a
+  // review is never trustworthy, whatever sources it names.
+  const ungrounded = Boolean(parsed.parsed?.claims.length > 0 && result.searches?.succeeded === 0);
+  if (ungrounded && parsed.parsed.overall === "trustworthy") parsed.parsed.overall = "mixed";
   if (parsed.parsed) {
     await resolveSources(parsed.parsed, {
       enabled: process.env.GEMINI_PLUGIN_CC_RESOLVE_SOURCES !== "0",
@@ -482,8 +529,10 @@ export async function handleReview(argv, { stdin = null } = {}) {
           agentVersion: result.agentVersion,
           stopReason: result.stopReason,
           timedOut,
+          compacted: Boolean(result.compacted),
           tokens: result.tokens,
           searches: result.searches ?? null,
+          ungrounded,
           deniedActions,
           parsed: parsed.parsed,
           parseError: parsed.parseError,
@@ -506,7 +555,9 @@ export async function handleReview(argv, { stdin = null } = {}) {
     fallbackReason,
     deniedActions,
     timedOut,
-    searches: result.searches ?? null
+    compacted: Boolean(result.compacted),
+    searches: result.searches ?? null,
+    ungrounded
   });
   process.stdout.write(rendered);
 }
@@ -594,18 +645,41 @@ function checkPinnedModels({ ids, error }) {
 
 export async function handleSetup(argv) {
   const { options } = parseArgs(normalizeArgv(argv));
-  const cwd = resolveCwd(options);
+  // Like review, setup runs agy only in its gated temp folder, so it refuses --cwd.
+  if (options.cwd != null) {
+    throw new ConfigError("Unknown flag: --cwd", { suggestion: "/gemini:setup takes only --json." });
+  }
+  // Every agy call of setup runs in an empty temp folder whose hook allows no
+  // tool. The canary needs none, so it cannot read or run anything.
+  const cwd = makeNeutralCwd("gemini-setup-cwd-", { tools: [] });
+  try {
+    await checkSetup(options, cwd);
+  } finally {
+    removeNeutralCwd(cwd);
+  }
+}
 
+// Writes a failed check as JSON with --json, else as the text report.
+function writeSetupFailure(options, report) {
+  process.stdout.write(options.json ? JSON.stringify(report, null, 2) + "\n" : renderSetupReport(report));
+  process.exitCode = 1;
+}
+
+async function checkSetup(options, cwd) {
   const agy = binaryAvailableImpl("agy", ["--version"], { cwd });
   if (!agy.available) {
-    const report = renderSetupReport({
+    writeSetupFailure(options, {
       agy,
       nextSteps: [
         "Install Antigravity CLI. See https://antigravity.google for instructions."
       ]
     });
-    process.stdout.write(report);
-    process.exitCode = 1;
+    return;
+  }
+  try {
+    requireHookAgy(agy.detail);
+  } catch (err) {
+    writeSetupFailure(options, { agy, nextSteps: [`${err.message} ${err.suggestion}`] });
     return;
   }
 
@@ -613,13 +687,18 @@ export async function handleSetup(argv) {
   // quota also explains a canary that fails because the quota is used up.
   const quota = readQuota(cwd);
   const modelCheck = checkPinnedModels(listModels(cwd));
+  // A newer agy may change what the plugin relies on. It still runs.
+  const versionWarning =
+    compareVersion(agy.detail, TESTED_AGY_VERSION) === 1
+      ? `Warning: agy ${agy.detail} is newer than ${TESTED_AGY_VERSION.join(".")}, the version this plugin was tested on. Run \`node "${SMOKE_TEST}"\` to check it.`
+      : null;
 
   const started = Date.now();
   try {
     // The only model call: the reply must echo the canary, which proves the prompt arrived.
     const CANARY = "OK";
     const canaryPrompt = `Reply with the single word ${CANARY} and nothing else.`;
-    const result = await runReviewImpl({
+    const result = await runAgy({
       prompt: canaryPrompt,
       cwd,
       promptTimeoutMs: 60_000,
@@ -636,7 +715,7 @@ export async function handleSetup(argv) {
 
     const setupOk = promptOk && modelCheck.status !== "failed";
 
-    const nextSteps = [];
+    const nextSteps = versionWarning ? [versionWarning] : [];
     if (!promptOk) {
       nextSteps.push(
         "agy ran but did not act on the prompt this plugin sent. The agy command line has likely changed. Compare `agy --help` with the flags in scripts/lib/agy-runner.mjs and update the plugin."
@@ -664,6 +743,7 @@ export async function handleSetup(argv) {
             transportOk: true,
             authOk: true,
             promptOk,
+            promptDetail,
             modelStatus: modelCheck.status,
             models: {
               primary: { model: PRIMARY_REVIEW_MODEL, ok: modelCheck.primaryOk },
@@ -671,7 +751,9 @@ export async function handleSetup(argv) {
               ask: { model: DEFAULT_ASK_MODEL, ok: modelCheck.askOk }
             },
             quota,
-            roundTripMs
+            versionWarning,
+            roundTripMs,
+            nextSteps
           },
           null,
           2
@@ -699,7 +781,7 @@ export async function handleSetup(argv) {
   } catch (err) {
     const transportOk = !(err instanceof AgyConnectionError);
     const authOk = !(err instanceof AgyAuthError);
-    const nextSteps = [];
+    const nextSteps = versionWarning ? [versionWarning] : [];
     if (err instanceof AgyAuthError) {
       nextSteps.push(
         "Run `agy -p hello` once interactively to complete OAuth, then retry `/gemini:setup`."
@@ -713,7 +795,7 @@ export async function handleSetup(argv) {
         `Unexpected error during setup: ${err.message}. Retry; rerun with GEMINI_PLUGIN_CC_DEBUG=1 for details.`
       );
     }
-    const report = renderSetupReport({
+    writeSetupFailure(options, {
       agy,
       transportOk,
       authOk,
@@ -723,8 +805,6 @@ export async function handleSetup(argv) {
       quota,
       nextSteps
     });
-    process.stdout.write(report);
-    process.exitCode = 1;
   }
 }
 
@@ -799,18 +879,6 @@ export async function handleAsk(argv, { stdin = null } = {}) {
       });
     }
   }
-  // With --dir, the hook is the only thing that stops a command that the
-  // user's agy rules allow, such as `grep x > file`, from writing into the
-  // user's folders, and a read of agy's own folder when --dir holds it. An agy
-  // that ignores the hook would not say so.
-  if (dirs.length > 0) {
-    const version = binaryAvailableImpl("agy", ["--version"]).detail;
-    if (!isAtLeast(version, MIN_DIR_AGY_VERSION)) {
-      throw new ConfigError(`--dir needs agy ${MIN_DIR_AGY_VERSION.join(".")} or later, and agy reports "${version}".`, {
-        suggestion: "Run `agy update`, then rerun."
-      });
-    }
-  }
   // The caller chooses the folders, so any folder is allowed, also / or the
   // home folder. agy's file tool reads only these folders.
   const realDirs = [...new Set(dirs.map((d) => fs.realpathSync.native(d)))];
@@ -821,8 +889,9 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   // --add-dir and read in place. agy keeps its own conversation history
   // elsewhere; only the temp folder is removed. So a --resume turn must attach
   // its files and folders again.
+  const pages = files.length === 0 && realDirs.length === 0 && !options.resume;
   const cwd = makeNeutralCwd("gemini-ask-cwd-", {
-    tools: ASK_TOOLS,
+    tools: pages ? ASK_TOOLS : ASK_LOCAL_TOOLS,
     fileTools: ASK_FILE_TOOLS,
     ...(imageOut ? { imageTools: IMAGE_TOOLS, subagents: ["image-generator"] } : {}),
     dirs: realDirs
@@ -832,6 +901,11 @@ export async function handleAsk(argv, { stdin = null } = {}) {
   const imagesBefore = imageOut && options.resume ? imageFiles(options.resume) : new Map();
   let result;
   try {
+    // The hook is the only thing that stops a command that the user's agy
+    // rules allow, such as `grep x > file`, a read outside the run's files and
+    // --dir folders, and a read of agy's own folder. An agy that ignores the
+    // hook would not say so.
+    requireHookAgy(binaryAvailableImpl("agy", ["--version"], { cwd }).detail);
     const copies = files.map((f, i) => {
       const ext = path.extname(f);
       const name = path.basename(f, ext) + (COPY_EXTENSIONS[ext.toLowerCase()] ?? ext);
@@ -845,7 +919,7 @@ export async function handleAsk(argv, { stdin = null } = {}) {
     if (realDirs.length > 0) {
       suffix += `\n\nFolders for this request (absolute paths):\n${realDirs.map((d) => `- ${d}`).join("\n")}`;
     }
-    suffix += `\n\n${imageOut ? IMAGE_TOOL_RULE : ASK_TOOL_RULE}`;
+    suffix += `\n\n${toolRule({ pages, image: Boolean(imageOut) })}`;
     let prompt = [question, body].filter(Boolean).join("\n\n") + suffix;
     if (byteLength(prompt) > MAX_ASK_PROMPT_BYTES) {
       throw new ConfigError(
@@ -860,7 +934,7 @@ export async function handleAsk(argv, { stdin = null } = {}) {
       const pieces = splitIntoParts(body, PART_BYTES);
       const n = pieces.length;
       parts = pieces.map(
-        (piece, i) => `Part ${i + 1} of ${n} of the input. Remember it, and do not act on it yet. Do not use tools. Reply with only OK.\n\n${piece}`
+        (piece, i) => `Part ${i + 1} of ${n} of the input. Remember it, and do not act on it yet. Do not use tools. Reply with only ${PART_ACK}.\n\n${piece}`
       );
       const done = `That was all ${n} parts of the input.`;
       prompt = (question ? `${done}\n\n${question}` : `${done} Now do what it asks.`) + suffix;
@@ -912,7 +986,11 @@ export async function handleAsk(argv, { stdin = null } = {}) {
       const refused = describeDeniedActions(deniedActions);
       throw new OutputError(
         `Gemini did not return JSON that fits the schema: ${checked.parseError}${refused ? ` agy refused these tools: ${refused}.` : ""} Its text answer: ${JSON.stringify(String(result.response ?? "")).slice(0, 300)}`,
-        { suggestion: `Rerun the ask${conversationId ? `, or continue it with --resume ${conversationId}` : ""}.` }
+        {
+          suggestion: timedOut
+            ? `agy hit its time limit before the JSON answer. ${TIMEOUT_HINT}`
+            : `Check that every answer can fit the schema, for example with an "unknown" enum value or fields that are not required. Then rerun the ask${conversationId ? `, or continue it with --resume ${conversationId}` : ""}.`
+        }
       );
     }
     structuredOutput = checked.parsed;
@@ -937,6 +1015,7 @@ export async function handleAsk(argv, { stdin = null } = {}) {
           images,
           tokens: result.tokens,
           deniedActions,
+          stopReason: result.stopReason,
           timedOut,
           compacted
         },

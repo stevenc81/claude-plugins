@@ -690,7 +690,7 @@ test("a part that does not come back as a plain success stops the run: nothing m
     const session = makeSessionProc([okReply(), bad, okReply(), okReply()]);
     await assert.rejects(
       () => runReview({ prompt: "q", parts: ["p1", "p2", "p3"], spawnFn: () => session.proc }),
-      (err) => err instanceof AgyConnectionError && /stopped after message 2 of 4/.test(err.message),
+      (err) => err instanceof AgyConnectionError && /Part 2 of 3 was not taken in/.test(err.message),
       name
     );
     assert.deepEqual(session.received, ["p1", "p2"], name);
@@ -709,11 +709,67 @@ test("an error result in the middle of the parts keeps its quota classification"
   assert.deepEqual(session.received, ["p1", "p2"]);
 });
 
+test("a final result with status ERROR fails on exit 0 and keeps its quota classification", async () => {
+  const { proc } = makeFakeProc({
+    stdoutChunks: [agyStream({ status: "ERROR", response: "", error: "Individual quota reached for Gemini 4 Argon." })],
+    exitCode: 0
+  });
+  await assert.rejects(() => runReview({ prompt: "x", model: "gemini-4-argon-low", spawnFn: () => proc }), AgyQuotaError);
+});
+
+test("a timeout before any answer text is an AgyTimeoutError; a turn with status ERROR fails also when it timed out", async () => {
+  const timeout = "[agy] print timeout after 4s with turn in progress; returning partial output\n";
+  // agy 1.4.3: status SUCCESS, empty response, all-zero usage, marker on stderr.
+  const empty = makeFakeProc({ stdoutChunks: [agyStream({ response: "" })], stderrChunks: [timeout] });
+  await assert.rejects(
+    () => runReview({ prompt: "x", promptTimeoutMs: 4000, spawnFn: () => empty.proc }),
+    (err) => err instanceof AgyTimeoutError && /before Gemini wrote any answer/.test(err.message) && /--background/.test(err.suggestion)
+  );
+  const errorTurn = makeFakeProc({ stdoutChunks: [agyStream({ status: "ERROR", response: "partial" })], stderrChunks: [timeout] });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => errorTurn.proc }), AgyConnectionError);
+});
+
+test("a lost task after a compaction is reported as such, with the time limit, not as a plain timeout", async () => {
+  const { proc } = makeFakeProc({
+    stdoutChunks: [
+      INIT_EVENT + "\n",
+      `${stepEvent({ step_index: 3, state: "DONE", step_type: "error_message" })}\n`,
+      `${stepEvent({ step_index: 4, state: "DONE", step_type: "checkpoint" })}\n`,
+      `${resultEvent({ response: "" })}\n`
+    ],
+    stderrChunks: ["[agy] print timeout after 4s with turn in progress; returning partial output\n"]
+  });
+  await assert.rejects(
+    () => runReview({ prompt: "x", promptTimeoutMs: 4000, spawnFn: () => proc }),
+    (err) => err instanceof AgyConnectionError && /compacted the conversation after an error step/.test(err.message) && /also hit its time limit \(4s\)/.test(err.message)
+  );
+});
+
+test("an unclassified error keeps the result's error next to stderr", async () => {
+  const { proc } = makeFakeProc({
+    stdoutChunks: [agyStream({ status: "ERROR", response: "", error: "backend RPC failed: UNAVAILABLE" })],
+    stderrChunks: ["[agy] print timeout after 4s with turn in progress; returning partial output\n"]
+  });
+  await assert.rejects(
+    () => runReview({ prompt: "x", spawnFn: () => proc }),
+    (err) => err instanceof AgyConnectionError && /print timeout/.test(err.message) && /backend RPC failed: UNAVAILABLE/.test(err.message)
+  );
+});
+
+test("a quota error in the result is a quota error also when stderr holds an unrelated warning", async () => {
+  const { proc } = makeFakeProc({
+    stdoutChunks: [agyStream({ status: "ERROR", response: "", error: "Individual quota reached for Gemini 4 Argon." })],
+    stderrChunks: ["warning: could not refresh the credential cache\n"],
+    exitCode: 0
+  });
+  await assert.rejects(() => runReview({ prompt: "x", model: "gemini-4-argon-low", spawnFn: () => proc }), AgyQuotaError);
+});
+
 test("agy that closes after the parts without answering the prompt is an error", async () => {
   const session = makeSessionProc([okReply(), okReply()]);
   await assert.rejects(
     () => runReview({ prompt: "q", parts: ["p1", "p2"], spawnFn: () => session.proc }),
-    /stopped after message 2 of 3/
+    /stopped after part 2 of 2, before the question/
   );
 });
 
@@ -753,7 +809,7 @@ test("a part whose turn the hook denied a tool in stops the run, though agy repo
     });
     await assert.rejects(
       () => runReview({ prompt: "q", parts: ["p1", "p2"], denialLog, spawnFn: () => session.proc }),
-      (err) => err instanceof AgyConnectionError && /stopped after message 1 of 3/.test(err.message) && /hook denied/.test(err.message)
+      (err) => err instanceof AgyConnectionError && /Part 1 of 2 was not taken in: the hook denied a tool call/.test(err.message)
     );
     assert.deepEqual(session.received, ["p1"]);
 
@@ -765,4 +821,72 @@ test("a part whose turn the hook denied a tool in stops the run, though agy repo
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a part is taken in only when Gemini replies OK; any other reply stops the run with an error that names the part", async () => {
+  for (const ack of ["OK", "ok", " OK. ", "Ok .\n"]) {
+    const session = makeSessionProc([okReply({ response: ack }), okReply({ response: "done" })]);
+    const result = await runReview({ prompt: "q", parts: ["p1"], spawnFn: () => session.proc });
+    assert.equal(result.text, "done", JSON.stringify(ack));
+  }
+  for (const bad of ["I could not keep this part; send it again.", "OK, but part 1 was cut off.", "Not OK"]) {
+    const session = makeSessionProc([okReply(), okReply({ response: bad }), okReply(), okReply()]);
+    await assert.rejects(
+      () => runReview({ prompt: "q", parts: ["p1", "p2", "p3"], spawnFn: () => session.proc }),
+      (err) => err instanceof AgyConnectionError && /Part 2 of 3 /.test(err.message) && err.message.includes(JSON.stringify(bad)),
+      bad
+    );
+    assert.deepEqual(session.received, ["p1", "p2"], bad);
+  }
+});
+
+test("with a schema, the parts go in a session without it, and the prompt goes with it into the same conversation", async () => {
+  const ingest = makeSessionProc([okReply({ conversation_id: "c-5" }), okReply({ conversation_id: "c-5", response: "OK." })]);
+  const answer = makeSessionProc([okReply({ conversation_id: "c-5", response: "", structured_output: { n: 2 } })]);
+  const spawns = [];
+  const result = await runReview({
+    prompt: "q",
+    parts: ["p1", "p2"],
+    jsonSchema: "/tmp/s.json",
+    conversationId: "c-5",
+    spawnFn: (_cmd, args) => {
+      spawns.push(args);
+      return spawns.length === 1 ? ingest.proc : answer.proc;
+    }
+  });
+  assert.equal(spawns.length, 2);
+  assert.ok(!spawns[0].some((a) => a.startsWith("--json-schema")), "no schema on the part turns");
+  assert.ok(spawns[0].includes("--conversation=c-5"));
+  assert.deepEqual(ingest.received, ["p1", "p2"]);
+  assert.ok(spawns[1].includes("--json-schema=/tmp/s.json"));
+  assert.ok(spawns[1].includes("--conversation=c-5"), "the prompt goes into the conversation that holds the parts");
+  assert.deepEqual(answer.received, ["q"]);
+  assert.equal(result.text, '{"n":2}');
+  assert.equal(result.conversationId, "c-5");
+});
+
+test("with a schema, a part that is not taken in stops the run before the prompt, and so does a lost conversation", async () => {
+  const bad = makeSessionProc([okReply(), okReply({ response: "I lost part 1." })]);
+  let spawns = 0;
+  await assert.rejects(
+    () => runReview({ prompt: "q", parts: ["p1", "p2"], jsonSchema: "/tmp/s.json", spawnFn: () => (spawns++, bad.proc) }),
+    (err) => err instanceof AgyConnectionError && /Part 2 of 2 /.test(err.message)
+  );
+  assert.equal(spawns, 1, "the prompt is not sent");
+  // agy answers in a new conversation when it cannot continue the old one.
+  const ingest = makeSessionProc([okReply(), okReply()]);
+  const elsewhere = makeSessionProc([okReply({ conversation_id: "c-new", structured_output: {} })]);
+  let n = 0;
+  await assert.rejects(
+    () => runReview({ prompt: "q", parts: ["p1", "p2"], jsonSchema: "/tmp/s.json", spawnFn: () => (n++ === 0 ? ingest.proc : elsewhere.proc) }),
+    (err) => err instanceof AgyConnectionError && /c-new/.test(err.message) && /c-1/.test(err.message)
+  );
+  // A compaction in the answer turn means Gemini no longer has the whole input.
+  const ingest2 = makeSessionProc([okReply(), okReply()]);
+  const compacts = makeSessionProc([okReply({ structured_output: {} })], { compactAt: 1 });
+  let m = 0;
+  await assert.rejects(
+    () => runReview({ prompt: "q", parts: ["p1", "p2"], jsonSchema: "/tmp/s.json", spawnFn: () => (m++ === 0 ? ingest2.proc : compacts.proc) }),
+    (err) => err instanceof ConfigError && /compacted the conversation/.test(err.message)
+  );
 });

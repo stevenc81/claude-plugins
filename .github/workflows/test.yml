@@ -1,0 +1,30 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # macOS, where the plugins are used and tested. The show plugin is macOS only.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: gemini
+        working-directory: plugins/gemini
+        run: npm test
+      # The show tests fake the disk and processes, so they need no network and no agy.
+      # They run in Claude Code's mod test kit.
+      - name: show
+        working-directory: plugins/show
+        run: |
+          npm install --global @anthropic-ai/claude-code@2.1.304
+          claude plugin test .

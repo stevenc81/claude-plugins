@@ -1,7 +1,7 @@
 import { ConfigError } from "./errors.mjs";
 
-const VALUE_FLAGS = new Set(["--base", "--cwd"]);
-const BOOLEAN_FLAGS = new Set(["--wait", "--background", "--json"]);
+const VALUE_FLAGS = new Set(["--cwd"]);
+const BOOLEAN_FLAGS = new Set(["--json"]);
 
 /**
  * `valueFlags` adds command-specific flags that take a value. `listFlags` take

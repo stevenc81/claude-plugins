@@ -12,7 +12,7 @@ If the tool is missing, the plugin did not load. Tell the user, and use a text d
 For all text in a picture or a narration, follow the same writing rules as your chat replies. If you cannot see them, for example as a subagent, and `~/.claude/hooks/rules.sh` exists, read that file first.
 Use only facts the user gave or you verified. If a fact is missing, ask or leave it out.
 
-Run this setup first:
+Shell variables do not last from one Bash call to the next. So start each Bash call with these setup lines:
 ```
 S="<this skill's base directory>/scripts"   # Claude Code shows the base directory when the skill loads
 OUT="$(getconf DARWIN_USER_TEMP_DIR)claude-visual"   # your private temp folder; macOS deletes files there after 3 days without use
@@ -34,7 +34,7 @@ case "$OUT" in /*) mkdir -p "$OUT" ;; *) echo "no private temp folder" >&2; exit
 
 ## Video (only when the user asks)
 
-A narrated 1 to 3 minute explainer (3Blue1Brown style), with a local voice and Manim. Free, offline, no LaTeX. Shell variables do not last from one Bash call to the next, so start each call with the setup lines and this one:
+A narrated 1 to 3 minute explainer (3Blue1Brown style), with a local voice and Manim. Free, offline, no LaTeX. In each Bash call, add this line after the setup lines:
 ```
 TMP="$OUT/work-<topic-slug>"; mkdir -p "$TMP"   # the same path in every call
 ```

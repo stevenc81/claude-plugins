@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   handleReview,
   setRunReviewForTest,
+  setBinaryAvailableForTest,
   PRIMARY_REVIEW_MODEL,
   FALLBACK_REVIEW_MODEL,
   ASK_TOOLS,
@@ -70,9 +71,25 @@ const okPayload = {
 
 beforeEach(() => {
   setRunReviewForTest(null);
+  setBinaryAvailableForTest(() => ({ available: true, detail: "1.4.3" }));
 });
 afterEach(() => {
   setRunReviewForTest(null);
+  setBinaryAvailableForTest(null);
+});
+
+test("review fails before the run on an agy older than the hook minimum or with no version", async () => {
+  setRunReviewForTest(async () => {
+    throw new Error("should not be called");
+  });
+  for (const detail of ["1.4.2", "agy not found on PATH"]) {
+    setBinaryAvailableForTest(() => ({ available: true, detail }));
+    await assert.rejects(
+      () => handleReview([], { stdin: "Claim." }),
+      (err) => err instanceof ConfigError && /needs agy 1\.4\.3 or later/.test(err.message),
+      detail
+    );
+  }
 });
 
 test("rejects empty stdin with a clear ConfigError", async () => {
@@ -138,6 +155,54 @@ test("grounding footer warns when no tool calls AND no claim sources", async () 
   const out = await captureStdout(() => handleReview([], { stdin: "claim body" }));
   assert.match(out, /No claim sources cited/);
   assert.match(out, /Treat results as ungrounded/);
+});
+
+test("a supported claim with no source becomes uncertain, in text and JSON, and the other claims stay", async () => {
+  setRunReviewForTest(async () => ({
+    ...okPayload,
+    text: JSON.stringify({
+      overall: "trustworthy",
+      summary: "One source missing.",
+      claims: [
+        { claim: "a", verdict: "supported", reasoning: "r", sources: ["https://example.com/a"] },
+        { claim: "b", verdict: "supported", reasoning: "r", sources: [""] },
+        { claim: "c", verdict: "contradicted", reasoning: "r", sources: ["https://example.com/c"] }
+      ],
+      reasoning_issues: []
+    })
+  }));
+  const json = JSON.parse(await captureStdout(() => handleReview(["--json"], { stdin: "claim body" })));
+  assert.equal(json.parsed.overall, "mixed");
+  assert.deepEqual(json.parsed.claims.map((c) => c.verdict), ["supported", "uncertain", "contradicted"]);
+  assert.match(json.parsed.claims[1].reasoning, /changed this verdict from supported: no source URL was cited/);
+  const out = await captureStdout(() => handleReview([], { stdin: "claim body" }));
+  assert.match(out, /Overall: mixed/);
+  assert.match(out, /\[uncertain\] b\n.*no source URL was cited/);
+});
+
+test("the grounding footer counts only http(s) URLs as cited sources", async () => {
+  setRunReviewForTest(async () => ({
+    ...okPayload,
+    text: JSON.stringify({
+      overall: "mixed",
+      summary: "s",
+      claims: [{ claim: "a", verdict: "uncertain", reasoning: "r", sources: [" ", "not a url", " https://example.com/a "] }],
+      reasoning_issues: []
+    })
+  }));
+  const out = await captureStdout(() => handleReview([], { stdin: "claim body" }));
+  assert.match(out, /1 source URL cited\./);
+});
+
+test("a compacted review says so in --json and in the text report", async () => {
+  setRunReviewForTest(async () => ({ ...okPayload, compacted: true }));
+  const json = JSON.parse(await captureStdout(() => handleReview(["--json"], { stdin: "claim body" })));
+  assert.equal(json.compacted, true);
+  const out = await captureStdout(() => handleReview([], { stdin: "claim body" }));
+  assert.match(out, /review \(\d+ bytes, degraded\)/);
+  assert.match(out, /agy compacted the conversation during this review/);
+  setRunReviewForTest(async () => okPayload);
+  assert.equal(JSON.parse(await captureStdout(() => handleReview(["--json"], { stdin: "claim body" }))).compacted, false);
 });
 
 test("--json mode emits stable payload with model selection fields", async () => {
@@ -521,7 +586,7 @@ test("--timeout-ms beats the env var, and a bad value is rejected", async () => 
   const prev = process.env.GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS;
   process.env.GEMINI_PLUGIN_CC_PROMPT_TIMEOUT_MS = "90000";
   try {
-    await captureStdout(() => handleReview(["--timeout-ms", "540000", "--wait"], { stdin: "x" }));
+    await captureStdout(() => handleReview(["--timeout-ms", "540000"], { stdin: "x" }));
     assert.equal(seen.promptTimeoutMs, 540000);
     await captureStdout(() => handleReview([], { stdin: "x" }));
     assert.equal(seen.promptTimeoutMs, 90000);
@@ -544,7 +609,7 @@ test("focus text arrives as one plain argument and is never re-split", async () 
   // Alone (the case the old re-splitting mangled) and after flags.
   await captureStdout(() => handleReview([TRICKY_FOCUS], { stdin: "x" }));
   assert.ok(prompt.includes(TRICKY_FOCUS));
-  await captureStdout(() => handleReview(["--timeout-ms", "540000", "--wait", TRICKY_FOCUS], { stdin: "x" }));
+  await captureStdout(() => handleReview(["--timeout-ms", "540000", TRICKY_FOCUS], { stdin: "x" }));
   assert.ok(prompt.includes(TRICKY_FOCUS));
 });
 
@@ -553,9 +618,9 @@ test("review.md's single-quote rule hands the shell's argv over unchanged", () =
   const quoted = `'${TRICKY_FOCUS.replace(/'/g, "'\\''")}'`;
   const out = execFileSync("/bin/sh", [
     "-c",
-    `node -e 'console.log(JSON.stringify(process.argv.slice(1)))' -- --wait ${quoted}`
+    `node -e 'console.log(JSON.stringify(process.argv.slice(1)))' -- --json ${quoted}`
   ], { encoding: "utf8" });
-  assert.deepEqual(JSON.parse(out), ["--wait", TRICKY_FOCUS]);
+  assert.deepEqual(JSON.parse(out), ["--json", TRICKY_FOCUS]);
 });
 
 test("the run gets the whole --timeout-ms budget", async () => {
@@ -627,4 +692,27 @@ test("focus text after -- is focus text, also when it starts with --cwd=, and th
   await captureStdout(() => handleReview(["--json", "--", "--cwd=/tmp check dates"], { stdin: "claim body" }));
   assert.match(seen.prompt, /<user_focus>\n--cwd=\/tmp check dates\n<\/user_focus>/);
   assert.match(path.basename(seen.cwd), /^gemini-review-cwd-/);
+});
+
+test("a review with claims and no successful search is ungrounded: never trustworthy, with a warning", async () => {
+  const review = (claims) =>
+    JSON.stringify({ overall: "trustworthy", summary: "s", claims, reasoning_issues: [] });
+  const claim = { claim: "a", verdict: "supported", reasoning: "r", sources: ["https://example.com/made-up"] };
+  for (const searches of [{ attempted: 0, succeeded: 0 }, { attempted: 3, succeeded: 0 }]) {
+    setRunReviewForTest(async () => ({ ...okPayload, text: review([claim]), searches }));
+    const json = JSON.parse(await captureStdout(() => handleReview(["--json"], { stdin: "claim body" })));
+    assert.equal(json.ungrounded, true, JSON.stringify(searches));
+    assert.equal(json.parsed.overall, "mixed", JSON.stringify(searches));
+    const out = await captureStdout(() => handleReview([], { stdin: "claim body" }));
+    assert.match(out, /degraded/);
+    assert.match(out, /No web search succeeded/);
+    assert.match(out, /Overall: mixed/);
+  }
+  // One successful search, or no claims, is not ungrounded.
+  for (const [claims, searches] of [[[claim], { attempted: 1, succeeded: 1 }], [[], { attempted: 0, succeeded: 0 }]]) {
+    setRunReviewForTest(async () => ({ ...okPayload, text: review(claims), searches }));
+    const json = JSON.parse(await captureStdout(() => handleReview(["--json"], { stdin: "claim body" })));
+    assert.equal(json.ungrounded, false);
+    assert.equal(json.parsed.overall, "trustworthy");
+  }
 });

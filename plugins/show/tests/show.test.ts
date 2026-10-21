@@ -71,4 +71,19 @@ describe('tool', () => {
     expect(await deny('/d/fake.png')).toBe('/d/fake.png is not a PNG file')
     expect(await deny('/d/fake.gif')).toBe('only .png and .mp4 files are supported')
   })
+
+  test('a second video is refused while the first one runs, and allowed after it', async ($, on) => {
+    on('tool.register', ($, e) => ({ value: { tool: `mcp__show__${e.name}` } }))
+    on('fs.exists', () => ({ value: true }))
+    // Every command fails after a short wait, so the first video ends with a deny.
+    on('process.run', async () => {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      return { value: { exitCode: 1, stdout: '', stderr: 'fake', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    const call = () => $.tool.call({ tool: TOOL, path: '/d/clip.mp4', alt: 'x' })
+    const [first, second] = await Promise.all([call(), call()])
+    expect(first.deny).toBe('getconf failed: fake')
+    expect(second.deny).toBe('another video is playing; show this one when it ends')
+    expect((await call()).deny).toBe('getconf failed: fake')
+  })
 })

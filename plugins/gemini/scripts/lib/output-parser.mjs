@@ -51,8 +51,34 @@ export function parseStructuredOutput(rawText, schemaName) {
   return { parsed, parseError: null, rawOutput: rawText };
 }
 
+// The review prompt requires a source for a `supported` verdict, but the
+// schema does not check it. Such a claim becomes `uncertain`, with the reason,
+// and a `trustworthy` overall becomes `mixed`. The other claims stay as they are.
+// Only an http(s) URL, after trimming, counts as a source.
+const UNSOURCED_NOTE = "[The plugin changed this verdict from supported: no source URL was cited.]";
+
+export function isSourceUrl(source) {
+  if (typeof source !== "string") return false;
+  try {
+    return ["http:", "https:"].includes(new URL(source.trim()).protocol);
+  } catch {
+    return false;
+  }
+}
+
 export function parseReviewOutput(rawText) {
-  return parseStructuredOutput(rawText, "review-output");
+  const out = parseStructuredOutput(rawText, "review-output");
+  if (!out.parsed) return out;
+  let changed = false;
+  for (const claim of out.parsed.claims) {
+    if (claim.verdict === "supported" && !(claim.sources ?? []).some(isSourceUrl)) {
+      claim.verdict = "uncertain";
+      claim.reasoning = `${claim.reasoning} ${UNSOURCED_NOTE}`;
+      changed = true;
+    }
+  }
+  if (changed && out.parsed.overall === "trustworthy") out.parsed.overall = "mixed";
+  return out;
 }
 
 // The keywords that `validate` checks, and ones that only describe.

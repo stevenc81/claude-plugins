@@ -8,8 +8,7 @@ import {
   setRunReviewForTest,
   setBinaryAvailableForTest,
   DEFAULT_ASK_MODEL,
-  ASK_TOOL_RULE,
-  IMAGE_TOOL_RULE,
+  toolRule,
   MAX_MEDIA_BYTES,
   setAgyHomeForTest
 } from "../scripts/gemini-companion.mjs";
@@ -94,7 +93,7 @@ test("ask uses the default model, runs from a fresh temp folder and removes it",
   assert.equal(out, "PONG\n\n[conversation] c-1\n");
   assert.equal(seen.model, DEFAULT_ASK_MODEL);
   assert.equal(DEFAULT_ASK_MODEL, "gemini-3.8-flash-medium");
-  assert.equal(seen.prompt, `Reply with PONG.\n\n${ASK_TOOL_RULE}`);
+  assert.equal(seen.prompt, `Reply with PONG.\n\n${toolRule()}`);
   assert.equal(seen.addDirs, undefined);
   assert.equal(seen.jsonSchema, undefined);
   assert.equal(seen.conversationId, undefined);
@@ -136,7 +135,7 @@ test("ask joins the prompt from arguments and stdin", async () => {
     return reply();
   });
   await captureStdout(() => handleAsk(["Summarize", "this:"], { stdin: "Some long text.\n" }));
-  assert.equal(prompt, `Summarize this:\n\nSome long text.\n\n${ASK_TOOL_RULE}`);
+  assert.equal(prompt, `Summarize this:\n\nSome long text.\n\n${toolRule()}`);
 });
 
 test("ask rejects an empty prompt without calling agy", async () => {
@@ -208,7 +207,7 @@ test("ask returns the response verbatim and adds notes for refused tools and tim
   assert.equal(cut, "Half an ans\n\n[note] agy hit its time limit, so this answer was cut off.\n[conversation] c-1\n");
 });
 
-test("ask --json returns model, conversationId, response, structuredOutput, images, tokens, deniedActions, timedOut and compacted", async () => {
+test("ask --json returns model, conversationId, response, structuredOutput, images, tokens, deniedActions, stopReason, timedOut and compacted", async () => {
   setRunReviewForTest(async () => reply());
   const out = await captureStdout(() => handleAsk(["--json"], { stdin: "Reply with PONG." }));
   assert.deepEqual(JSON.parse(out), {
@@ -219,6 +218,7 @@ test("ask --json returns model, conversationId, response, structuredOutput, imag
     images: null,
     tokens: { input_tokens: 11828, output_tokens: 2, total_tokens: 11830 },
     deniedActions: [],
+    stopReason: "end_turn",
     timedOut: false,
     compacted: false
   });
@@ -319,10 +319,25 @@ test("ask --schema fails when the answer is empty or does not fit the schema", a
       setRunReviewForTest(async () => reply({ text, response: "prose" }));
       await assert.rejects(
         () => handleAsk(["--schema", file], { stdin: "q" }),
-        (err) => err instanceof OutputError && why.test(err.message) && /prose/.test(err.message),
+        (err) => err instanceof OutputError && why.test(err.message) && /prose/.test(err.message) && /"unknown" enum value/.test(err.suggestion),
         text
       );
     }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ask --schema that times out before the JSON answer says what to do about the time limit", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-schema-"));
+  try {
+    const file = path.join(dir, "s.json");
+    fs.writeFileSync(file, JSON.stringify({ type: "object" }));
+    setRunReviewForTest(async () => reply({ text: "", response: "half", timedOut: true, stopReason: "timeout" }));
+    await assert.rejects(
+      () => handleAsk(["--schema", file], { stdin: "q" }),
+      (err) => err instanceof OutputError && /time limit/.test(err.suggestion) && /--background/.test(err.suggestion)
+    );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -422,7 +437,7 @@ test("ask splits a longer prompt file into parts at line ends; the last message 
     assert.ok(pieces.join("") === body.trim(), "the parts hold the whole file, trimmed, in order");
     assert.ok(pieces.slice(0, -1).every((p) => p.endsWith("\n")), "each part but the last ends at a line end");
     assert.ok(seen.prompt.startsWith(`That was all ${n} parts of the input.\n\nAdd code 1 and the last code.\n\nFiles for this request`));
-    assert.ok(seen.prompt.endsWith(ASK_TOOL_RULE));
+    assert.ok(seen.prompt.endsWith(toolRule({ pages: false })));
     assert.ok(!seen.prompt.includes("word word"), "the document is not in the last message");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -437,7 +452,7 @@ test("with no question in the arguments, the last message tells Gemini to do wha
   });
   await captureStdout(() => handleAsk([], { stdin: doc(2500) }));
   assert.equal(seen.parts.length, 2);
-  assert.equal(seen.prompt, `That was all 2 parts of the input. Now do what it asks.\n\n${ASK_TOOL_RULE}`);
+  assert.equal(seen.prompt, `That was all 2 parts of the input. Now do what it asks.\n\n${toolRule()}`);
 });
 
 test("ask --resume with a long prompt sends the parts into the resumed conversation", async () => {
@@ -477,7 +492,7 @@ test("ask --prompt-file reads the prompt from a file, after any argument text, a
     await captureStdout(() =>
       handleAsk(["--cwd", dir, "--prompt-file", "prompt.md", "Summarize:"], { stdin: "stdin text is not read" })
     );
-    assert.equal(prompt, `Summarize:\n\nLine one.\nIt's "quoted" and has $(no) expansion.\n\n${ASK_TOOL_RULE}`);
+    assert.equal(prompt, `Summarize:\n\nLine one.\nIt's "quoted" and has $(no) expansion.\n\n${toolRule()}`);
     // After --, text that starts with -- is prompt text, not a flag.
     await captureStdout(() => handleAsk(["--prompt-file", path.join(dir, "prompt.md"), "--", "--help means what?"], { stdin: "" }));
     assert.ok(prompt.startsWith("--help means what?\n\nLine one."), prompt.slice(0, 40));
@@ -537,7 +552,7 @@ test("ask --dir adds each folder with --add-dir, lists the folders and runs from
         `Where is isDuplicate?\n\nFolders for this request (absolute paths):\n- ${real[0]}\n- ${real[1]}\n\n`
       )
     );
-    assert.ok(seen.prompt.endsWith(ASK_TOOL_RULE), "one tool rule, with no ls or grep");
+    assert.ok(seen.prompt.endsWith(toolRule({ pages: false })), "one tool rule, with no ls or grep");
     assert.equal(fs.existsSync(seen.cwd), false, "the temp folder is removed");
     assert.equal(fs.existsSync(path.join(a, "main.cpp")), true, "the --dir folder is not removed");
   } finally {
@@ -630,17 +645,19 @@ test("ask --dir and --file work together", async () => {
   }
 });
 
-test("ask --dir fails before the run on an agy older than 1.4.3 or with no version", async () => {
+test("ask, with or without --dir, fails before the run on an agy older than 1.4.3 or with no version", async () => {
   setRunReviewForTest(async () => {
     throw new Error("should not be called");
   });
-  for (const detail of ["1.4.2", "1.3.6", "agy not found on PATH"]) {
-    useAgyVersion(detail);
-    await assert.rejects(
-      () => handleAsk(["--dir", os.tmpdir()], { stdin: "hi" }),
-      (err) => err instanceof ConfigError && /needs agy 1\.4\.3 or later/.test(err.message) && /agy update/.test(err.suggestion),
-      detail
-    );
+  for (const argv of [[], ["--dir", os.tmpdir()]]) {
+    for (const detail of ["1.4.2", "1.3.6", "agy not found on PATH"]) {
+      useAgyVersion(detail);
+      await assert.rejects(
+        () => handleAsk(argv, { stdin: "hi" }),
+        (err) => err instanceof ConfigError && /needs agy 1\.4\.3 or later/.test(err.message) && /agy update/.test(err.suggestion),
+        detail
+      );
+    }
   }
   for (const detail of ["1.4.3", "1.5.0", "2.0.0"]) {
     useAgyVersion(detail);
@@ -664,18 +681,25 @@ test("ask rejects a full prompt over the cap, also when only the folder list mak
   try {
     const dirs = Array.from({ length: 300 }, (_, i) => path.join(root, `${i}-${"x".repeat(240)}`));
     dirs.forEach((d) => fs.mkdirSync(d));
-    let cwd;
     setRunReviewForTest(async () => {
       throw new Error("should not be called");
     });
-    await assert.rejects(
-      () => handleAsk(dirs.flatMap((d) => ["--dir", d]), { stdin: "x".repeat(700_000) }),
-      (err) => err instanceof ConfigError && /folder lists/.test(err.message) && /720000/.test(err.message)
-    );
+    // The plugin makes its temp folder in a fresh TMPDIR of its own, so that
+    // other processes that run asks at the same time do not show up here.
+    const tmp = fs.mkdtempSync(path.join(root, "tmpdir-"));
+    const before = process.env.TMPDIR;
+    process.env.TMPDIR = tmp;
+    try {
+      await assert.rejects(
+        () => handleAsk(dirs.flatMap((d) => ["--dir", d]), { stdin: "x".repeat(700_000) }),
+        (err) => err instanceof ConfigError && /folder lists/.test(err.message) && /720000/.test(err.message)
+      );
+    } finally {
+      if (before === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = before;
+    }
     // The temp folder is still removed after the error.
-    const left = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith("gemini-ask-cwd-"));
-    cwd = left.find((n) => fs.statSync(path.join(os.tmpdir(), n)).mtimeMs > Date.now() - 5000);
-    assert.equal(cwd, undefined);
+    assert.deepEqual(fs.readdirSync(tmp), []);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -814,7 +838,7 @@ test("ask --image-out allows only the image-generator subagent, checks reference
     });
     // No image was saved, so the ask fails after the checks.
     await assert.rejects(() => handleAsk(["--image-out", out], { stdin: "draw a cube" }), (err) => err instanceof OutputError && /made no image/.test(err.message));
-    assert.ok(seen.prompt.endsWith(IMAGE_TOOL_RULE));
+    assert.ok(seen.prompt.endsWith(toolRule({ image: true })));
     assert.deepEqual(decisions, {
       imageGenerator: "allow",
       listForm: "allow",
@@ -961,5 +985,90 @@ test("ask --schema accepts the answers false, 0, an empty string and null, and a
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an ask with --file or --dir denies page reads and its tool rule says so; web search, finish and the file reader stay", async () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-local-")));
+  try {
+    fs.writeFileSync(path.join(dir, "a.txt"), "A");
+    for (const flags of [["--file", path.join(dir, "a.txt")], ["--dir", dir]]) {
+      let seen;
+      const decisions = {};
+      setRunReviewForTest(async (args) => {
+        seen = args;
+        for (const name of ["search_web", "finish", "read_url_content"]) decisions[name] = hookDecision(args.cwd, { name, args: {} });
+        decisions.read = hookDecision(args.cwd, { name: "read_file", args: { Path: path.join(dir, "a.txt") } });
+        fs.writeFileSync(path.join(args.cwd, "files", "x.txt"), "x");
+        decisions.readCopy = hookDecision(args.cwd, { name: "read_file", args: { Path: path.join(args.cwd, "files", "x.txt") } });
+        return reply();
+      });
+      await captureStdout(() => handleAsk(flags, { stdin: "Summarize it." }));
+      assert.deepEqual(
+        decisions,
+        { search_web: "allow", finish: "allow", read_url_content: "deny", read: flags[0] === "--dir" ? "allow" : "deny", readCopy: "allow" },
+        flags[0]
+      );
+      assert.ok(seen.prompt.endsWith(toolRule({ pages: false })), flags[0]);
+      assert.match(seen.prompt, /This run cannot open web pages\./);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("every --resume ask denies page reads, also with no --file or --dir, and its tool rule says so", async () => {
+  let seen;
+  const decisions = {};
+  setRunReviewForTest(async (args) => {
+    seen = args;
+    for (const name of ["search_web", "finish", "read_url_content"]) decisions[name] = hookDecision(args.cwd, { name, args: {} });
+    return reply();
+  });
+  await captureStdout(() => handleAsk(["--resume", "c-1"], { stdin: "And the next step?" }));
+  assert.deepEqual(decisions, { search_web: "allow", finish: "allow", read_url_content: "deny" });
+  assert.ok(seen.prompt.endsWith(toolRule({ pages: false })));
+});
+
+test("--file copies the whole file through short writes, and fails on a write of zero bytes", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ask-short-"));
+  const realWriteSync = fs.writeSync;
+  try {
+    fs.writeFileSync(path.join(dir, "a.txt"), "abcdef");
+    let copied;
+    setRunReviewForTest(async (args) => {
+      copied = fs.readFileSync(path.join(args.cwd, "files", "1-a.txt"), "utf8");
+      return reply();
+    });
+    // Each write takes at most 3 bytes, as a short write can.
+    fs.writeSync = (fd, buf, off, len, pos) => realWriteSync(fd, buf, off, Math.min(len, 3), pos);
+    await captureStdout(() => handleAsk(["--file", path.join(dir, "a.txt")], { stdin: "read it" }));
+    assert.equal(copied, "abcdef");
+    fs.writeSync = () => 0;
+    await assert.rejects(() => handleAsk(["--file", path.join(dir, "a.txt")], { stdin: "read it" }), /wrote 0 bytes/);
+  } finally {
+    fs.writeSync = realWriteSync;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an image copy that fails partway leaves no partial file in --image-out, and keeps its error", async () => {
+  const { brain, out, root } = imageFixture();
+  const realWriteSync = fs.writeSync;
+  try {
+    setRunReviewForTest(async () => {
+      fs.writeFileSync(path.join(brain, "cube.png"), "abcdef");
+      // The export writes 3 bytes, then nothing more.
+      let calls = 0;
+      fs.writeSync = (fd, buf, off, len, pos) => (calls++ === 0 ? realWriteSync(fd, buf, off, Math.min(len, 3), pos) : 0);
+      return reply({ conversationId: CONV, response: "Made a cube." });
+    });
+    await assert.rejects(() => handleAsk(["--image-out", out], { stdin: "draw a cube" }), (err) => err instanceof ConfigError && /wrote 0 bytes/.test(err.message));
+    fs.writeSync = realWriteSync;
+    assert.deepEqual(fs.readdirSync(out), []);
+  } finally {
+    fs.writeSync = realWriteSync;
+    setAgyHomeForTest(null);
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

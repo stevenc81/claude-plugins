@@ -1,4 +1,5 @@
 import process from "node:process";
+import { isSourceUrl } from "./output-parser.mjs";
 
 function indent(text, prefix = "  ") {
   return text
@@ -28,7 +29,7 @@ function countClaimSources(parsed) {
   if (!parsed || !Array.isArray(parsed.claims)) return 0;
   let n = 0;
   for (const c of parsed.claims) {
-    if (Array.isArray(c.sources)) n += c.sources.filter(Boolean).length;
+    if (Array.isArray(c.sources)) n += c.sources.filter(isSourceUrl).length;
   }
   return n;
 }
@@ -54,12 +55,14 @@ export function renderReviewResult({
   fallbackReason = null,
   deniedActions = [],
   timedOut = false,
-  searches = null
+  compacted = false,
+  searches = null,
+  ungrounded = false
 }) {
   const labelParts = [];
   if (target?.inputBytes != null) labelParts.push(`${target.inputBytes} bytes`);
   if (target?.truncated) labelParts.push(`truncated by ${target.omittedBytes}`);
-  if (parseError || timedOut) labelParts.push("degraded");
+  if (parseError || timedOut || compacted || ungrounded) labelParts.push("degraded");
   const label = labelParts.length ? `review (${labelParts.join(", ")})` : "review";
   const header = formatHeader({
     reviewLabel: "Gemini Review",
@@ -77,6 +80,12 @@ export function renderReviewResult({
   const refused = describeDeniedActions(deniedActions);
   if (timedOut) {
     lines.push("agy hit its time limit and cut the review off. Results may be incomplete.", "");
+  }
+  if (ungrounded) {
+    lines.push("No web search succeeded, so these verdicts are Gemini's own view, not checked on the web.", "");
+  }
+  if (compacted) {
+    lines.push("agy compacted the conversation during this review, so Gemini worked from a summary of its earlier steps. Check the results against the sources.", "");
   }
 
   if (parseError) {

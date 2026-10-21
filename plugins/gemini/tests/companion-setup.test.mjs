@@ -1,14 +1,20 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
 import {
   handleSetup,
   setRunReviewForTest,
   setBinaryAvailableForTest,
   setRunCommandForTest,
+  compareVersion,
   PRIMARY_REVIEW_MODEL,
-  FALLBACK_REVIEW_MODEL
+  FALLBACK_REVIEW_MODEL,
+  TESTED_AGY_VERSION
 } from "../scripts/gemini-companion.mjs";
-import { AgyAuthError } from "../scripts/lib/errors.mjs";
+import { AgyAuthError, ConfigError } from "../scripts/lib/errors.mjs";
 
 function captureStdout(fn) {
   const chunks = [];
@@ -325,4 +331,147 @@ test("setup model check is degraded, not FAILED, when only the ask default model
   const json = JSON.parse((await runSetup(["--json"])).out);
   assert.equal(json.modelStatus, "degraded");
   assert.deepEqual(json.models.ask, { model: "gemini-3.8-flash-medium", ok: false });
+});
+
+// Runs the hook the way agy does, from the hooks.json in the temp folder.
+function hookDecision(cwd, toolCall) {
+  const hooks = JSON.parse(fs.readFileSync(path.join(cwd, ".agents", "hooks.json"), "utf8"));
+  const { command } = hooks["gemini-plugin-tool-gate"].PreToolUse[0].hooks[0];
+  const input = JSON.stringify({ toolCall, conversationId: "c-1" });
+  return JSON.parse(execFileSync("sh", ["-c", command], { input, encoding: "utf8" })).decision;
+}
+
+test("setup runs every agy call in one gated temp folder that allows no tool, and removes it", async () => {
+  const cwds = new Set();
+  const decisions = {};
+  setBinaryAvailableForTest((cmd, args, opts) => {
+    cwds.add(opts?.cwd);
+    return { available: true, detail: "1.4.3" };
+  });
+  const commands = fakeCommands();
+  setRunCommandForTest((cmd, args, opts) => {
+    cwds.add(opts?.cwd);
+    return commands(cmd, args);
+  });
+  setRunReviewForTest(async (args) => {
+    cwds.add(args.cwd);
+    const secret = path.join(os.homedir(), ".ssh", "id_rsa");
+    decisions.read = hookDecision(args.cwd, { name: "read_file", args: { Path: secret } });
+    decisions.files = hookDecision(args.cwd, { name: "read_file", args: { Path: path.join(args.cwd, "files") } });
+    for (const name of ["run_command", "search_web", "read_url_content", "invoke_subagent", "write_to_file"]) {
+      decisions[name] = hookDecision(args.cwd, { name, args: { CommandLine: "cat ~/.ssh/id_rsa" } });
+    }
+    return canaryOk(args);
+  });
+  const { exitCode } = await runSetup();
+  assert.notEqual(exitCode, 1);
+  assert.equal(cwds.size, 1, "the version check, models, quota and canary share one folder");
+  const [cwd] = cwds;
+  assert.equal(path.dirname(cwd), fs.realpathSync(os.tmpdir()));
+  assert.match(path.basename(cwd), /^gemini-setup-cwd-/);
+  assert.notEqual(cwd, process.cwd(), "not the user's folder");
+  for (const [name, decision] of Object.entries(decisions)) assert.equal(decision, "deny", name);
+  assert.equal(fs.existsSync(cwd), false, "the temp folder is removed afterwards");
+});
+
+test("setup removes its temp folder also when agy is missing", async () => {
+  let cwd;
+  setBinaryAvailableForTest((cmd, args, opts) => {
+    cwd = opts?.cwd;
+    return { available: false, detail: "agy not found on PATH" };
+  });
+  const { exitCode } = await runSetup();
+  assert.equal(exitCode, 1);
+  assert.match(path.basename(cwd), /^gemini-setup-cwd-/);
+  assert.equal(fs.existsSync(cwd), false);
+});
+
+test("setup refuses --cwd, because agy runs only in its gated temp folder", async () => {
+  await assert.rejects(() => handleSetup(["--cwd", os.tmpdir()]), (err) => err instanceof ConfigError && /--cwd/.test(err.message));
+});
+
+test("setup warns, and still runs, when agy is newer than the tested version", async () => {
+  setRunReviewForTest(canaryOk);
+  setBinaryAvailableForTest(() => ({ available: true, detail: "1.5.0" }));
+  const { out, exitCode } = await runSetup();
+  assert.match(out, /Warning: agy 1\.5\.0 is newer than 1\.4\.3, the version this plugin was tested on\. Run `node ".*smoke-agy\.mjs"`/);
+  assert.match(out, /Ready\. Try/);
+  assert.notEqual(exitCode, 1);
+  const json = JSON.parse((await runSetup(["--json"])).out);
+  assert.match(json.versionWarning, /newer than 1\.4\.3/);
+  assert.equal(json.promptOk, true);
+  const smoke = json.versionWarning.match(/node "(.*)"/)[1];
+  assert.ok(fs.existsSync(smoke), "the warning names a smoke test that exists");
+});
+
+test("setup warns also when the canary fails on a newer agy", async () => {
+  setBinaryAvailableForTest(() => ({ available: true, detail: "2.0.0" }));
+  setRunReviewForTest(async () => {
+    throw new AgyAuthError("agy is not signed in: unauthorized");
+  });
+  const { out, exitCode } = await runSetup();
+  assert.match(out, /Warning: agy 2\.0\.0 is newer/);
+  assert.equal(exitCode, 1);
+});
+
+test("setup does not warn on the tested version", async () => {
+  setRunReviewForTest(canaryOk);
+  setBinaryAvailableForTest(() => ({ available: true, detail: TESTED_AGY_VERSION.join(".") }));
+  const { out } = await runSetup();
+  assert.doesNotMatch(out, /Warning:/);
+  assert.equal(JSON.parse((await runSetup(["--json"])).out).versionWarning, null);
+});
+
+test("setup fails before any agy call on an agy older than the hook minimum or with no version", async () => {
+  setRunReviewForTest(async () => {
+    throw new Error("should not be called");
+  });
+  setRunCommandForTest(() => {
+    throw new Error("should not be called");
+  });
+  for (const detail of ["1.4.2", "agy ok"]) {
+    setBinaryAvailableForTest(() => ({ available: true, detail }));
+    const { out, exitCode } = await runSetup();
+    assert.equal(exitCode, 1, detail);
+    assert.match(out, /needs agy 1\.4\.3 or later.*agy update/, detail);
+    const json = JSON.parse((await runSetup(["--json"])).out);
+    assert.match(json.nextSteps[0], /needs agy 1\.4\.3 or later/, detail);
+  }
+});
+
+test("setup --json has promptDetail and nextSteps when the canary reply is wrong", async () => {
+  setBinaryAvailableForTest(() => ({ available: true, detail: "1.4.3" }));
+  setRunReviewForTest(async (args) => ({ ...(await canaryOk(args)), text: "hello", response: "hello" }));
+  const { out, exitCode } = await runSetup(["--json"]);
+  assert.equal(exitCode, 1);
+  const json = JSON.parse(out);
+  assert.equal(json.promptOk, false);
+  assert.match(json.promptDetail, /did not echo the canary; got: hello/);
+  assert.match(json.nextSteps.join(" "), /command line has likely changed/);
+});
+
+test("setup --json prints JSON also when agy is missing or the canary fails", async () => {
+  setBinaryAvailableForTest(() => ({ available: false, detail: "agy not found on PATH" }));
+  let { out, exitCode } = await runSetup(["--json"]);
+  assert.equal(exitCode, 1);
+  assert.equal(JSON.parse(out).agy.available, false);
+
+  setBinaryAvailableForTest(() => ({ available: true, detail: "1.4.3" }));
+  setRunReviewForTest(async () => {
+    throw new AgyAuthError("agy is not signed in: unauthorized");
+  });
+  ({ out, exitCode } = await runSetup(["--json"]));
+  assert.equal(exitCode, 1);
+  const json = JSON.parse(out);
+  assert.equal(json.authOk, false);
+  assert.match(json.nextSteps.join(" "), /agy -p hello/);
+});
+
+test("compareVersion compares x.y.z numbers, not strings", () => {
+  assert.equal(compareVersion("1.4.3", [1, 4, 3]), 0);
+  assert.equal(compareVersion("agy 1.10.0", [1, 4, 3]), 1);
+  assert.equal(compareVersion("1.4.10", [1, 4, 3]), 1);
+  assert.equal(compareVersion("1.4.2", [1, 4, 3]), -1);
+  assert.equal(compareVersion("0.9.9", [1, 4, 3]), -1);
+  assert.equal(compareVersion("agy not found on PATH", [1, 4, 3]), null);
 });

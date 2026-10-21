@@ -15,7 +15,7 @@ The Claude Code plugins I use every day, in one marketplace.
 /plugin install show@stevenc81
 ```
 
-Use the same `install` line for `gemini@stevenc81` or `orchestrate@stevenc81`. Installing orchestrate also installs gemini and OpenAI's codex plugin, so add `openai/codex-plugin-cc` as a marketplace first. Each plugin's README lists what it needs on your machine.
+Use the same `install` line for `gemini@stevenc81` or `orchestrate@stevenc81`. Installing orchestrate also installs gemini. Each plugin's README lists what it needs on your machine.
 
 ## Updates
 
@@ -23,9 +23,10 @@ The plugins have no version numbers. Claude Code uses the git commit as the vers
 
 ```
 claude plugin marketplace update stevenc81
+claude plugin update <plugin>@stevenc81
 ```
 
-Then run `/reload-plugins`, or start a new session. To get updates without asking, turn on auto-update for the `stevenc81` marketplace under Marketplaces in `/plugin`.
+Run the second line once for each plugin you installed: `orchestrate`, `gemini` or `show`. Then start a new session: `claude plugin update` says a restart applies the update. To get updates without asking, turn on auto-update for the `stevenc81` marketplace under Marketplaces in `/plugin`.
 
 ## Licenses
 

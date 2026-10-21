@@ -10,34 +10,30 @@ test("parses empty argv", () => {
 });
 
 test("parses boolean flags", () => {
-  const { options } = parseArgs(["--wait", "--background", "--json"]);
-  assert.equal(options.wait, true);
-  assert.equal(options.background, true);
+  const { options } = parseArgs(["--json"]);
   assert.equal(options.json, true);
 });
 
 test("parses value flags with space separator", () => {
-  const { options } = parseArgs(["--base", "main", "--cwd", "/tmp/x"]);
-  assert.equal(options.base, "main");
+  const { options } = parseArgs(["--cwd", "/tmp/x"]);
   assert.equal(options.cwd, "/tmp/x");
 });
 
 test("parses value flags with = separator", () => {
-  const { options } = parseArgs(["--base=develop", "--cwd=/tmp/x"]);
-  assert.equal(options.base, "develop");
+  const { options } = parseArgs(["--cwd=/tmp/x"]);
   assert.equal(options.cwd, "/tmp/x");
 });
 
 test("rejects value flag without value", () => {
-  assert.throws(() => parseArgs(["--base"]), ConfigError);
+  assert.throws(() => parseArgs(["--cwd"]), ConfigError);
 });
 
 test("rejects value flag followed by another flag", () => {
-  assert.throws(() => parseArgs(["--base", "--wait"]), ConfigError);
+  assert.throws(() => parseArgs(["--cwd", "--json"]), ConfigError);
 });
 
 test("rejects boolean flag with =value", () => {
-  assert.throws(() => parseArgs(["--wait=yes"]), ConfigError);
+  assert.throws(() => parseArgs(["--json=yes"]), ConfigError);
 });
 
 test("rejects unknown flags", () => {
@@ -52,24 +48,24 @@ test("--model is now an unknown flag (dropped in v0.1)", () => {
 });
 
 test("disallows positionals by default", () => {
-  assert.throws(() => parseArgs(["some-focus", "--base", "main"]), ConfigError);
+  assert.throws(() => parseArgs(["some-focus", "--cwd", "/tmp/x"]), ConfigError);
 });
 
 test("allows positionals when opted in", () => {
   const { options, positionals } = parseArgs(
-    ["--base", "main", "challenge", "the", "design"],
+    ["--cwd", "/tmp/x", "challenge", "the", "design"],
     { allowPositionals: true }
   );
-  assert.equal(options.base, "main");
+  assert.equal(options.cwd, "/tmp/x");
   assert.deepEqual(positionals, ["challenge", "the", "design"]);
 });
 
 test("-- separator collects remaining as positionals", () => {
   const { options, positionals } = parseArgs(
-    ["--wait", "--", "--not-a-flag", "text"],
+    ["--json", "--", "--not-a-flag", "text"],
     { allowPositionals: true }
   );
-  assert.equal(options.wait, true);
+  assert.equal(options.json, true);
   assert.deepEqual(positionals, ["--not-a-flag", "text"]);
 });
 
@@ -133,4 +129,10 @@ test("booleanFlags adds command-specific flags that take no value", () => {
   assert.equal(options["no-fallback"], true);
   assert.throws(() => parseArgs(["--no-fallback=1"], { booleanFlags: ["--no-fallback"] }), /does not take a value/);
   assert.throws(() => parseArgs(["--no-fallback"]), /unknown flag/i);
+});
+
+test("--base, --wait and --background are unknown flags: the companion never used them", () => {
+  for (const argv of [["--base", "main"], ["--wait"], ["--background"]]) {
+    assert.throws(() => parseArgs(argv, { allowPositionals: true }), (err) => err instanceof ConfigError && /Unknown flag/.test(err.message), argv[0]);
+  }
 });

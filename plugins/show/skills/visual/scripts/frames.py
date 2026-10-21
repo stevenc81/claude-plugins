@@ -8,14 +8,16 @@ import json, re, subprocess, sys, os
 
 video, out = sys.argv[1:3]
 os.makedirs(out, exist_ok=True)
+# The video may open only local files, never a URL, such as a segment of an HLS playlist.
+LOCAL_ONLY = ["-protocol_whitelist", "file"]
 total = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                             "-of", "csv=p=0", video], capture_output=True, text=True, check=True).stdout)
+                             "-of", "csv=p=0", *LOCAL_ONLY, video], capture_output=True, text=True, check=True).stdout)
 for bid, (start, end) in json.load(open(os.path.join(os.path.dirname(video), "times.json"))).items():
     # A beat ID becomes a file name, so it must not hold a path.
     if not re.fullmatch(r"[A-Za-z0-9_-]+", bid):
         sys.exit(f"bad beat id {bid!r}: use only letters, digits, _ and -")
     at = min(end - 0.15, total - 0.2)
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{at:.2f}", "-i", video,
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{at:.2f}", *LOCAL_ONLY, "-i", video,
                     "-frames:v", "1", f"{out}/{bid}.png"], check=True)
     png = f"{out}/{bid}.png"
     if not os.path.exists(png) or os.path.getsize(png) == 0:

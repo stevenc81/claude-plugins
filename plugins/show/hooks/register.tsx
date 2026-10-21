@@ -26,6 +26,9 @@ type Playback = {
   isStopAsked: boolean // /pause stopped this afplay on purpose
 }
 let current: Playback | undefined
+// True from the start of a video call to its end. A second video would take
+// over `current` while the first still plays, so it is refused.
+let isVideoBusy = false
 
 async function run($: EngineInterface, argv: string[]) {
   const done = await $.process.run(argv, { timeoutMs: 300_000 })
@@ -51,17 +54,23 @@ async function readPngSize($: EngineInterface, file: string) {
   return pngSize(hexBytes(await run($, ['xxd', '-p', '-l', '24', file])))
 }
 
+// Every ffmpeg and ffprobe input may open only local files, so a video cannot
+// make ffmpeg open a URL, such as a segment of an HLS playlist. ffmpeg 9.0.2
+// already limits a local playlist to file, crypto and data; the flag keeps the
+// limit whatever ffmpeg's defaults are.
+const LOCAL_ONLY = ['-protocol_whitelist', 'file']
+
 // Splits the video into PNG frames and a wav exactly as long as the frames.
 // Each call has its own folder, deleted when it ends; the poster stays.
 async function prepare($: EngineInterface, path: string, dir: string) {
   await run($, ['mkdir', '-p', dir])
-  await run($, ['ffmpeg', '-v', 'error', '-y', '-i', path, '-vf', `fps=${FPS},scale=${FRAME_WIDTH}:-2`, `${dir}/f%05d.png`])
+  await run($, ['ffmpeg', '-v', 'error', '-y', ...LOCAL_ONLY, '-i', path, '-vf', `fps=${FPS},scale=${FRAME_WIDTH}:-2`, `${dir}/f%05d.png`])
   const count = (await $.fs.list(dir)).filter(f => f.name.endsWith('.png')).length
   if (count === 0) throw new Error('ffmpeg wrote no frames')
 
   const seconds = count / FPS
-  const streams = await run($, ['ffprobe', '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', path])
-  const sound = streams.trim() ? ['-i', path, '-vn', '-af', `apad=whole_dur=${seconds}`] : ['-f', 'lavfi', '-i', 'anullsrc=r=22050:cl=mono']
+  const streams = await run($, ['ffprobe', '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', ...LOCAL_ONLY, path])
+  const sound = streams.trim() ? [...LOCAL_ONLY, '-i', path, '-vn', '-af', `apad=whole_dur=${seconds}`] : ['-f', 'lavfi', '-i', 'anullsrc=r=22050:cl=mono']
   await run($, ['ffmpeg', '-v', 'error', '-y', ...sound, '-t', String(seconds), '-c:a', 'pcm_s16le', `${dir}/audio.wav`])
 
   const size = await readPngSize($, framePath(dir, 0))
@@ -72,7 +81,7 @@ async function prepare($: EngineInterface, path: string, dir: string) {
 // The wav from `seconds` on, for a resume. afplay cannot start mid-file.
 async function soundFrom($: EngineInterface, dir: string, seconds: number) {
   if (seconds <= 0) return `${dir}/audio.wav`
-  await run($, ['ffmpeg', '-v', 'error', '-y', '-ss', seconds.toFixed(3), '-i', `${dir}/audio.wav`, '-c', 'copy', `${dir}/resume.wav`])
+  await run($, ['ffmpeg', '-v', 'error', '-y', '-ss', seconds.toFixed(3), ...LOCAL_ONLY, '-i', `${dir}/audio.wav`, '-c', 'copy', `${dir}/resume.wav`])
   return `${dir}/resume.wav`
 }
 
@@ -121,14 +130,17 @@ export const register: Register = on => {
       return { result: JSON.stringify(shown) }
     }
     if (ext !== 'mp4') return { deny: 'only .png and .mp4 files are supported' }
+    if (isVideoBusy) return { deny: 'another video is playing; show this one when it ends' }
+    isVideoBusy = true
 
     const id = e.tool_use_id
-    const dir = `${await cache($)}/${id}`
-    const poster = `${await cache($)}/posters/${id}.png`
+    let dir = ''
     let play: Playback | undefined
     let tick: { cancel: () => void } | undefined
     let isClosed = false
     try {
+      dir = `${await cache($)}/${id}`
+      const poster = `${await cache($)}/posters/${id}.png`
       const video = await prepare($, path, dir)
       await run($, ['cp', framePath(dir, video.count - 1), poster])
       play = {
@@ -193,11 +205,12 @@ export const register: Register = on => {
     } catch (error) {
       return { deny: String(error instanceof Error ? error.message : error) }
     } finally {
+      isVideoBusy = false
       isClosed = true
       tick?.cancel()
       if (play && current === play) current = undefined
       $.ui.invalidate('ui.render')
-      await $.process.run(['rm', '-rf', dir]).catch(() => undefined)
+      if (dir) await $.process.run(['rm', '-rf', dir]).catch(() => undefined)
     }
   }).catch(($, e, next) => ({ deny: `the show tool failed (${next.error.kind}); run claude --debug for details` }))
 

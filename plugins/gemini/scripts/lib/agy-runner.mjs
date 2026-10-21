@@ -12,6 +12,10 @@ import {
 } from "./errors.mjs";
 
 export const DEFAULT_PROMPT_TIMEOUT_MS = 1_200_000;
+// What a caller of the slash commands can do about a time limit: they run in
+// the foreground with 9 minutes and in the background with the default 20.
+export const TIMEOUT_HINT =
+  "If it ran in the foreground (9 minutes), run it with --background (20 minutes). Otherwise split the job into smaller parts.";
 // agy's own --print-timeout returns partial output with exit 0. Our wall-clock
 // timer runs a bit longer so that partial result can arrive before we kill.
 const WALL_CLOCK_GRACE_MS = 30_000;
@@ -95,14 +99,23 @@ function hookDenied(denialLog) {
   }
 }
 
-// A part was taken in: a plain success with some reply and no refused tool.
-function isPartAccepted(result) {
-  return (
-    isValidResult(result) &&
-    result.status === "SUCCESS" &&
-    result.response.trim() !== "" &&
-    !(Array.isArray(result.denied_actions) && result.denied_actions.length > 0)
-  );
+// The reply that each part of a long prompt asks for.
+export const PART_ACK = "OK";
+const ACK_PATTERN = new RegExp(String.raw`^${PART_ACK}\s*\.?$`, "i");
+const COMPACTED_SUGGESTION = "Send less text: split the job into several asks, or attach the input with --file for lookups.";
+
+// Why a part was not taken in, or null when it was: a plain success that says
+// PART_ACK (in any case, with spaces or a final period), with no refused tool
+// and nothing in the hook's log.
+function partProblem(result, denialLog) {
+  if (!isValidResult(result)) return `agy sent no valid result (got ${JSON.stringify(result ?? null).slice(0, 100)})`;
+  if (result.status !== "SUCCESS") return `status ${result.status}`;
+  const denied = Array.isArray(result.denied_actions) ? result.denied_actions.length : 0;
+  if (denied > 0) return `agy refused ${denied} tools`;
+  if (hookDenied(denialLog)) return "the hook denied a tool call";
+  const reply = result.response.trim();
+  if (!ACK_PATTERN.test(reply)) return `Gemini replied ${JSON.stringify(reply.slice(0, 100))} instead of ${PART_ACK}`;
+  return null;
 }
 
 function quotaError(detail, model) {
@@ -126,7 +139,9 @@ function errorForExit({ code, signal, result, plain, stderr, model }) {
   }
 
   const resultError = typeof result?.error === "string" ? result.error : "";
-  const detail = stderr.trim() || resultError || plain.trim() || `exit ${code ?? signal}`;
+  // Both stderr and the result's error, so that unrelated stderr, such as a
+  // warning, cannot hide the error.
+  const detail = [stderr.trim(), resultError].filter(Boolean).join("; ") || plain.trim() || `exit ${code ?? signal}`;
   // The unknown-model text lists display names such as "Gemini 3.1 Pro", so it
   // must be matched before the auth word list below.
   if (UNKNOWN_MODEL_MARKER.test(detail)) {
@@ -165,10 +180,15 @@ function errorForExit({ code, signal, result, plain, stderr, model }) {
  *
  * `parts` are messages sent before the prompt, each in its own turn of the
  * same session, for a prompt too long for one message. Each part is sent
- * after the `result` of the one before it, and must come back as a plain
- * success, with nothing new in the hook's `denialLog`; otherwise nothing more
- * is sent and the run fails. stdin closes
- * after the prompt. agy's usage in the last `result` covers the whole session.
+ * after the `result` of the one before it, and must come back as PART_ACK
+ * (see partProblem), with nothing new in the hook's `denialLog`; otherwise
+ * nothing more is sent and the run fails with an error that names the part.
+ * stdin closes after the prompt. agy's usage in the last `result` covers the
+ * whole session. agy applies `--json-schema` to every turn of a session, so a
+ * part would come back as JSON, not PART_ACK. With `jsonSchema`, the parts
+ * therefore go in a session without it, and the prompt then goes with it into
+ * the same conversation (`--conversation`), in the time that is left. The
+ * result's usage is then the second session's.
  * When the session grows past agy's compaction threshold, agy replaces the
  * earlier turns with a summary (a `checkpoint` step). Gemini then no longer
  * has the whole input, so a session with parts that compacts fails too. Any
@@ -189,7 +209,47 @@ function errorForExit({ code, signal, result, plain, stderr, model }) {
  * A run that hits agy's `--print-timeout` still exits 0 with partial output;
  * the stderr marker is the only reliable signal, surfaced as `timedOut`.
  */
-export function runReview({
+export function runReview(options = {}) {
+  if (!options.prompt) {
+    throw new AgyConnectionError("runReview requires a non-empty prompt.");
+  }
+  return options.parts?.length > 0 && options.jsonSchema ? runPartsThenSchema(options) : runSession(options);
+}
+
+async function runPartsThenSchema({ parts, promptTimeoutMs = DEFAULT_PROMPT_TIMEOUT_MS, ...options }) {
+  const deadline = Date.now() + promptTimeoutMs;
+  const ingest = await runSession({
+    ...options,
+    prompt: parts.at(-1),
+    parts: parts.slice(0, -1),
+    jsonSchema: null,
+    promptTimeoutMs,
+    promptIsPart: true
+  });
+  const leftMs = deadline - Date.now();
+  if (leftMs <= 0) {
+    throw new AgyTimeoutError(`agy used its whole time limit (${secondsForGoDuration(promptTimeoutMs)}) on the parts, before the question.`, {
+      suggestion: TIMEOUT_HINT
+    });
+  }
+  const result = await runSession({ ...options, conversationId: ingest.conversationId, promptTimeoutMs: leftMs });
+  if (result.conversationId !== ingest.conversationId) {
+    throw new AgyConnectionError(
+      `agy answered the question in conversation ${result.conversationId}, not in ${ingest.conversationId}, which holds the parts.`,
+      { suggestion: "Rerun the ask." }
+    );
+  }
+  if (result.compacted) {
+    throw new ConfigError(`agy compacted the conversation at the question, after all ${parts.length} parts, so Gemini no longer had the whole input.`, {
+      suggestion: COMPACTED_SUGGESTION
+    });
+  }
+  return result;
+}
+
+// One agy session: the parts, then the prompt. With `promptIsPart`, the prompt
+// is the last part, and must come back as PART_ACK too.
+function runSession({
   prompt,
   cwd = process.cwd(),
   promptTimeoutMs = DEFAULT_PROMPT_TIMEOUT_MS,
@@ -200,12 +260,9 @@ export function runReview({
   conversationId = null,
   parts = [],
   denialLog = null,
+  promptIsPart = false,
   spawnFn = nodeSpawn
-} = {}) {
-  if (!prompt) {
-    throw new AgyConnectionError("runReview requires a non-empty prompt.");
-  }
-
+}) {
   const args = [];
   if (model) args.push(`--model=${model}`);
   for (const dir of addDirs) args.push(`--add-dir=${dir}`);
@@ -223,6 +280,7 @@ export function runReview({
     let partLine = ""; // the end of stdout that has no newline yet
     let stderr = "";
     const messages = [...parts, prompt];
+    const acks = promptIsPart ? messages.length : parts.length; // messages that must come back as PART_ACK
     let sent = 0;
     let answered = 0; // result events so far, one per message
     let compacted = false;
@@ -260,7 +318,7 @@ export function runReview({
       result = event.result;
       answered += 1;
       if (answered < messages.length) {
-        if (isPartAccepted(result) && !hookDenied(denialLog) && !(compacted && parts.length > 0)) sendNext();
+        if (!partProblem(result, denialLog) && !compacted) sendNext();
         else proc.stdin?.end?.();
       }
     };
@@ -361,30 +419,39 @@ export function runReview({
           reject(errorForExit({ code, signal, result, plain, stderr, model }));
           return;
         }
-        if (compacted && parts.length > 0) {
+        if (compacted && acks > 0) {
           reject(
             new ConfigError(
               `agy compacted the conversation by message ${answered} of ${messages.length}, so Gemini no longer had the whole input.`,
-              { suggestion: "Send less text: split the job into several asks, or attach the input with --file for lookups." }
+              { suggestion: COMPACTED_SUGGESTION }
             )
           );
           return;
         }
-        // A part was not taken in, or agy stopped before the last message.
-        if (answered > 0 && answered < messages.length) {
-          if (result?.status === "ERROR") {
-            reject(errorForExit({ code, signal, result, plain, stderr, model }));
+        // A turn that ended with status ERROR fails also on exit 0, so that a
+        // quota or model error keeps its class. agy 1.4.3 ends a timed-out turn
+        // with status SUCCESS; only the stderr marker tells (timedOut below).
+        if (result?.status === "ERROR") {
+          reject(errorForExit({ code, signal, result, plain, stderr, model }));
+          return;
+        }
+        // The last result is a part's: it was not taken in, or agy stopped
+        // before the next message.
+        if (answered > 0 && (answered < messages.length || promptIsPart)) {
+          const problem = partProblem(result, denialLog);
+          const err = stderr.trim() ? ` (stderr: ${stderr.trim()})` : "";
+          const next = answered < acks ? "the next part" : "the question";
+          if (problem || answered < messages.length) {
+            reject(
+              new AgyConnectionError(
+                problem
+                  ? `Part ${answered} of ${acks} was not taken in: ${problem}${err}.`
+                  : `agy stopped after part ${answered} of ${acks}, before ${next}${err}.`,
+                { suggestion: `Rerun the ask. Each part must come back as ${PART_ACK} before the next message is sent.` }
+              )
+            );
             return;
           }
-          const denied = Array.isArray(result?.denied_actions) ? result.denied_actions.length : 0;
-          const hook = hookDenied(denialLog) ? ", and the hook denied a tool call" : "";
-          const detail = `status ${result?.status}, response ${JSON.stringify(result?.response ?? null).slice(0, 100)}, ${denied} refused tools${hook}${stderr.trim() ? `, stderr: ${stderr.trim()}` : ""}`;
-          reject(
-            new AgyConnectionError(`agy stopped after message ${answered} of ${messages.length} (${detail}).`, {
-              suggestion: "Rerun the ask. Each part must come back as a plain reply before the next one is sent."
-            })
-          );
-          return;
         }
         if (!isValidResult(result)) {
           const got = result === undefined ? "" : ` (got ${JSON.stringify(result).slice(0, 200)})`;
@@ -400,15 +467,27 @@ export function runReview({
         const response = result.response;
         // With a schema, the answer is structured_output, and the response may be empty.
         const hasAnswer = jsonSchema ? Object.hasOwn(result, "structured_output") : response.trim() !== "";
+        const timedOut = PRINT_TIMEOUT_MARKER.test(stderr);
+        const limit = timedOut ? ` agy also hit its time limit (${secondsForGoDuration(promptTimeoutMs)}).` : "";
+        // Checked before the timeout below: a lost task is the likelier cause.
         if (compacted && (lostTask || !hasAnswer)) {
           reject(
             new AgyConnectionError(
-              `agy compacted the conversation after ${lostTask ? "an error step" : "a turn"}, and the answer ${response.trim() ? `may not fit the task: ${JSON.stringify(response).slice(0, 120)}` : "is empty"}.`,
+              `agy compacted the conversation after ${lostTask ? "an error step" : "a turn"}, and the answer ${response.trim() ? `may not fit the task: ${JSON.stringify(response).slice(0, 120)}` : "is empty"}.${limit}`,
               {
                 suggestion:
                   "The model most likely lost the task. A media file that is too large does this: pass a smaller or shorter file, or less text."
               }
             )
+          );
+          return;
+        }
+        // A partial answer comes back with timedOut; no text at all is an error.
+        if (timedOut && response.trim() === "" && !Object.hasOwn(result, "structured_output")) {
+          reject(
+            new AgyTimeoutError(`agy hit its time limit (${secondsForGoDuration(promptTimeoutMs)}) before Gemini wrote any answer.`, {
+              suggestion: TIMEOUT_HINT
+            })
           );
           return;
         }
@@ -419,7 +498,6 @@ export function runReview({
         } else if (jsonSchema) {
           text = "";
         }
-        const timedOut = PRINT_TIMEOUT_MARKER.test(stderr);
         const usage = result.usage ?? null;
         resolve({
           stopReason: timedOut ? "timeout" : "end_turn",

@@ -133,7 +133,7 @@ test("the ask foreground flow caps the model run at 9 minutes, under the 10-minu
   }
 });
 
-test("the review command always runs in the background with the full time budget", () => {
+test("in the main session, the review command runs in the background with the full time budget", () => {
   const text = fs.readFileSync(path.join(commandsDir, "review.md"), "utf8");
   assert.doesNotMatch(text, /Foreground flow:/);
   const command = text.match(/command: `([^\n]*)/)[1];
@@ -143,11 +143,18 @@ test("the review command always runs in the background with the full time budget
   assert.match(text, /run_in_background: true/);
 });
 
-test("background flows tell a subagent to hold its one final report until the task finishes", () => {
+test("a subagent runs each command in the foreground, ending by itself before the Bash limit", () => {
   for (const name of ["review.md", "ask.md"]) {
     const text = fs.readFileSync(path.join(commandsDir, name), "utf8");
-    assert.match(text, /If you are a subagent, do not send your final report yet/, name);
+    // An idle subagent is not woken when its own background task ends.
+    assert.doesNotMatch(text, /do not send your final report yet/, name);
+    assert.match(text, /If you are a subagent, run [^\n]*in the foreground/, name);
+    assert.match(text, /not woken when its own background task ends/, name);
   }
+  const review = fs.readFileSync(path.join(commandsDir, "review.md"), "utf8");
+  const sub = review.slice(review.indexOf("Subagent flow:"));
+  assert.match(sub, /\nnode "\$\{CLAUDE_PLUGIN_ROOT\}[^\n]* review --timeout-ms 540000[^\n]*\n/);
+  assert.match(sub, /600000/);
 });
 
 test("commands pre-approve only the companion script and never paste raw arguments into the shell", () => {
@@ -159,5 +166,16 @@ test("commands pre-approve only the companion script and never paste raw argumen
   for (const name of ["ask.md", "review.md"]) {
     const text = fs.readFileSync(path.join(commandsDir, name), "utf8");
     assert.match(text, /Make a new heredoc end marker for each call/, name);
+  }
+});
+
+test("inside a larger task, a command hands its output back and the task goes on; verbatim only for a direct call", () => {
+  for (const name of ["review.md", "ask.md"]) {
+    const text = fs.readFileSync(path.join(commandsDir, name), "utf8");
+    assert.match(text, /If the user called this command directly, your only job is to run/, name);
+    assert.match(text, /If it runs inside a larger task \(you are a subagent, or another skill called it\), give the output to that task, then go on with the task\./, name);
+    // One copy of the no-commentary rule, in the direct-call line.
+    assert.equal(text.match(/commentary/g).length, 1, name);
+    assert.doesNotMatch(text, /^- Your only job is/m, name);
   }
 });

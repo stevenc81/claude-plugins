@@ -190,3 +190,20 @@ test("required and properties count only the object's own keys, not inherited on
   assert.equal(parseAgainstSchema('{"constructor":"c","toString":1}', schema).parseError, null);
   assert.match(parseAgainstSchema('{"constructor":1,"toString":1}', schema).parseError, /constructor: expected string/);
 });
+
+test("a supported claim counts as sourced only with a trimmed http(s) URL", () => {
+  const review = (sources) =>
+    parseReviewOutput(
+      JSON.stringify({ overall: "trustworthy", summary: "s", claims: [{ claim: "c", verdict: "supported", reasoning: "r", sources }], reasoning_issues: [] })
+    ).parsed;
+  for (const bad of [[" "], ["\n\t"], ["not a url"], ["example.com/a"], ["ftp://example.com/a"], ["javascript:alert(1)"], ["https://"]]) {
+    const r = review(bad);
+    assert.equal(r.claims[0].verdict, "uncertain", JSON.stringify(bad));
+    assert.equal(r.overall, "mixed", JSON.stringify(bad));
+  }
+  for (const good of [["https://example.com/a"], ["  http://example.com/a  "], [" ", "https://example.com/b"]]) {
+    const r = review(good);
+    assert.equal(r.claims[0].verdict, "supported", JSON.stringify(good));
+    assert.equal(r.overall, "trustworthy", JSON.stringify(good));
+  }
+});
