@@ -1,0 +1,7 @@
+{
+  "name": "self-improve",
+  "description": "Improve any target that an agent can read and change, such as a folder or a Datadog dashboard, in rounds that each learn from all earlier rounds, so the open issues fall in number and severity.",
+  "author": {
+    "name": "stevenc81"
+  }
+}

@@ -7,6 +7,7 @@ The Claude Code plugins I use every day, in one marketplace.
 | [orchestrate](plugins/orchestrate) | Runs a small team of Claude, Codex and Gemini agents, and picks a model for each job. |
 | [gemini](plugins/gemini) | Fact-checks a conversation with Gemini and live web search, through the Antigravity CLI. |
 | [show](plugins/show) | Shows pictures and plays narrated videos inline in the terminal, in Ghostty or kitty. |
+| [self-improve](plugins/self-improve) | Improves a folder or a live target, such as a Datadog dashboard, toward a goal in rounds, and tells you after each round if it got better or worse. |
 
 ## Install
 
@@ -15,7 +16,7 @@ The Claude Code plugins I use every day, in one marketplace.
 /plugin install show@stevenc81
 ```
 
-Use the same `install` line for `gemini@stevenc81` or `orchestrate@stevenc81`. Installing orchestrate also installs gemini. Each plugin's README lists what it needs on your machine.
+Use the same `install` line for `gemini@stevenc81`, `orchestrate@stevenc81` or `self-improve@stevenc81`. Installing orchestrate also installs gemini. Each plugin's README lists what it needs on your machine.
 
 ## Updates
 
@@ -26,8 +27,8 @@ claude plugin marketplace update stevenc81
 claude plugin update <plugin>@stevenc81
 ```
 
-Run the second line once for each plugin you installed: `orchestrate`, `gemini` or `show`. Then start a new session: `claude plugin update` says a restart applies the update. To get updates without asking, turn on auto-update for the `stevenc81` marketplace under Marketplaces in `/plugin`.
+Run the second line once for each plugin you installed: `orchestrate`, `gemini`, `show` or `self-improve`. Then start a new session: `claude plugin update` says a restart applies the update. To get updates without asking, turn on auto-update for the `stevenc81` marketplace under Marketplaces in `/plugin`.
 
 ## Licenses
 
-Each plugin has its own license: orchestrate and show use MIT, and gemini uses Apache 2.0.
+Each plugin has its own license: orchestrate, show and self-improve use MIT, and gemini uses Apache 2.0.
