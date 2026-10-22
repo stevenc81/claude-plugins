@@ -65,7 +65,7 @@ const MEDIA_EXTENSIONS = new Set(
 );
 // agy 1.4.3 refuses some audio types by file extension, though the model
 // decodes the same bytes. An .m4a file is an MP4 container, so its copy is
-// named .mp4. AAC and FLAC need a conversion.
+// named .mp4. AAC and FLAC need a conversion, also on agy 1.4.4.
 const COPY_EXTENSIONS = { ".m4a": ".mp4" };
 const REFUSED_EXTENSIONS = new Set([".aac", ".flac"]);
 // Below this, a fallback review run would be cut off before it could finish.
@@ -105,7 +105,7 @@ export const MIN_HOOK_AGY_VERSION = [1, 4, 3];
 // The newest agy that this plugin was tested on, with tests/smoke-agy.mjs.
 // /gemini:setup warns on a newer one, so that someone runs the smoke test and
 // then raises this number.
-export const TESTED_AGY_VERSION = [1, 4, 3];
+export const TESTED_AGY_VERSION = [1, 4, 4];
 const SMOKE_TEST = fileURLToPath(new URL("../tests/smoke-agy.mjs", import.meta.url));
 
 // -1, 0 or 1 as the x.y.z in `version` is below, at or above `v`; null when
