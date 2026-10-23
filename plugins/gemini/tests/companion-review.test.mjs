@@ -16,11 +16,13 @@ import {
   ConfigError,
   AgyAuthError,
   AgyConnectionError,
+  AgyContentFilterError,
   AgyModelError,
   AgyQuotaError,
   AgyTimeoutError,
   AgyInterruptedError
 } from "../scripts/lib/errors.mjs";
+import { renderError } from "../scripts/lib/render.mjs";
 
 function captureStdout(fn) {
   const chunks = [];
@@ -429,6 +431,27 @@ test("a sign-in error is not retried on Flash", async () => {
   });
   await assert.rejects(() => handleReview([], { stdin: "a claim to check" }), AgyAuthError);
   assert.deepEqual(calls, [PRIMARY_REVIEW_MODEL]);
+});
+
+test("a content-safety block is not retried on Flash, and the error names the block", async () => {
+  const calls = [];
+  setRunReviewForTest(async (args) => {
+    calls.push(args.model);
+    throw new AgyContentFilterError("Content safety filters blocked Gemini's response, so agy stopped the run: x", {
+      suggestion: "Rephrase the request, then rerun."
+    });
+  });
+  let error;
+  await assert.rejects(
+    () => handleReview([], { stdin: "a claim to check" }),
+    (err) => (error = err) instanceof AgyContentFilterError
+  );
+  assert.deepEqual(calls, [PRIMARY_REVIEW_MODEL]);
+  // main() writes renderError(err) to stderr and sets exit code 1.
+  const out = renderError(error);
+  assert.match(out, /Content safety filters blocked/);
+  assert.match(out, /Rephrase the request/);
+  assert.doesNotMatch(out, /sign|version|fallback/i);
 });
 
 test("a hard timeout is not retried on Flash: the budget is gone", async () => {

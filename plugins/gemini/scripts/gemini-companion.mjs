@@ -31,16 +31,17 @@ import {
   ConfigError,
   AgyAuthError,
   AgyConnectionError,
+  AgyContentFilterError,
   AgyTimeoutError,
   AgyInterruptedError,
   OutputError
 } from "./lib/errors.mjs";
 
 const MAX_REVIEW_INPUT_BYTES = 40_000;
-// agy 1.4.3 shows the model only the first 192,000 bytes of a message,
-// counting its own wrapper of about 400 bytes, and drops the rest without an
-// error. In October 2026 a 190,000-byte message arrived whole on
-// gemini-3.8-flash-low, and a 1 MB one was cut. Argon cut a 250 KB one too.
+// The largest message that goes whole: agy cuts a longer one without an
+// error. This is a little below agy's measured cap, which leaves room for its
+// own wrapper. The cap is in the README, "/gemini:ask", the bullet on the
+// message cap.
 const MAX_MESSAGE_BYTES = 190_000;
 // A longer ask prompt goes as parts of at most this size, one per turn of a
 // single agy session. The rest of MAX_MESSAGE_BYTES is room for the part header.
@@ -65,7 +66,7 @@ const MEDIA_EXTENSIONS = new Set(
 );
 // agy 1.4.3 refuses some audio types by file extension, though the model
 // decodes the same bytes. An .m4a file is an MP4 container, so its copy is
-// named .mp4. AAC and FLAC need a conversion, also on agy 1.4.4.
+// named .mp4. AAC and FLAC need a conversion: see the README, "Media".
 const COPY_EXTENSIONS = { ".m4a": ".mp4" };
 const REFUSED_EXTENSIONS = new Set([".aac", ".flac"]);
 // Below this, a fallback review run would be cut off before it could finish.
@@ -105,7 +106,7 @@ export const MIN_HOOK_AGY_VERSION = [1, 4, 3];
 // The newest agy that this plugin was tested on, with tests/smoke-agy.mjs.
 // /gemini:setup warns on a newer one, so that someone runs the smoke test and
 // then raises this number.
-export const TESTED_AGY_VERSION = [1, 4, 4];
+export const TESTED_AGY_VERSION = [1, 4, 5];
 const SMOKE_TEST = fileURLToPath(new URL("../tests/smoke-agy.mjs", import.meta.url));
 
 // -1, 0 or 1 as the x.y.z in `version` is below, at or above `v`; null when
@@ -473,10 +474,13 @@ export async function handleReview(argv, { stdin = null } = {}) {
       result = await runAgy({ ...runArgs, model: requestedModel });
     } catch (err) {
       // Flash cannot fix a sign-in problem, a hard timeout used the whole
-      // budget, and a stopped run must not start another. A caller that would
-      // discard a Flash result turns the fallback off.
+      // budget, and a stopped run must not start another. Flash gets the same
+      // text after a content-safety block, so a fallback would hide the block
+      // (not checked: that Flash is blocked too). A caller that would discard a
+      // Flash result turns the fallback off.
       if (
         err instanceof AgyAuthError ||
+        err instanceof AgyContentFilterError ||
         err instanceof AgyTimeoutError ||
         err instanceof AgyInterruptedError ||
         options["no-fallback"]
@@ -1003,6 +1007,15 @@ export async function handleAsk(argv, { stdin = null } = {}) {
         suggestion: "Rerun the ask. agy's image tool fails on some plans (agy issue #1202)."
       });
     }
+  }
+  // A plain ask needs some text. agy can report success with none: in a probe
+  // on 2026-10-23, agy 1.4.5 cut a 260,058-byte message and ended the run with
+  // status SUCCESS and an empty response.
+  if (!schema && !imageOut && String(result.response ?? "").trim() === "") {
+    const refused = describeDeniedActions(deniedActions);
+    throw new OutputError(`Gemini returned an empty answer.${refused ? ` agy refused these tools: ${refused}.` : ""}`, {
+      suggestion: `Rerun the ask${conversationId ? `, or continue it with --resume ${conversationId}` : ""}.`
+    });
   }
   if (options.json) {
     process.stdout.write(

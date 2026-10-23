@@ -193,18 +193,37 @@ test("ask --file rejects a missing file without calling agy", async () => {
 test("ask returns the response verbatim and adds notes for refused tools and timeouts", async () => {
   setRunReviewForTest(async () =>
     reply({
-      text: "",
-      response: "",
+      text: "Partly read.",
+      response: "Partly read.",
       deniedActions: [{ action: "read_file", display_name: "ViewFile" }]
     })
   );
   const refused = await captureStdout(() => handleAsk([], { stdin: "read it" }));
-  assert.match(refused, /\[note\] The model returned no text\./);
+  assert.match(refused, /^Partly read\.\n/);
   assert.match(refused, /\[note\] agy refused these tools: ViewFile \(read_file\)\./);
 
   setRunReviewForTest(async () => reply({ text: "Half an ans", response: "Half an ans", timedOut: true }));
   const cut = await captureStdout(() => handleAsk([], { stdin: "essay" }));
   assert.equal(cut, "Half an ans\n\n[note] agy hit its time limit, so this answer was cut off.\n[conversation] c-1\n");
+});
+
+test("ask without --schema fails on an empty or whitespace-only answer, and names refused tools", async () => {
+  // agy 1.4.5 ended a run with status SUCCESS and an empty response (probe 2026-10-23).
+  for (const response of ["", " \n\t"]) {
+    setRunReviewForTest(async () => reply({ text: response, response }));
+    for (const args of [[], ["--json"]]) {
+      await assert.rejects(
+        () => captureStdout(() => handleAsk(args, { stdin: "q" })),
+        (err) => err instanceof OutputError && /empty answer/.test(err.message) && /--resume c-1/.test(err.suggestion),
+        JSON.stringify([response, args])
+      );
+    }
+  }
+  setRunReviewForTest(async () => reply({ text: "", response: "", deniedActions: [{ action: "read_file", display_name: "ViewFile" }] }));
+  await assert.rejects(
+    () => handleAsk([], { stdin: "read it" }),
+    (err) => err instanceof OutputError && /agy refused these tools: ViewFile \(read_file\)/.test(err.message)
+  );
 });
 
 test("ask --json returns model, conversationId, response, structuredOutput, images, tokens, deniedActions, stopReason, timedOut and compacted", async () => {
@@ -940,6 +959,21 @@ test("ask --image-out on a resumed conversation fails when the run made no image
     });
     const json = JSON.parse(await captureStdout(() => handleAsk(["--json", "--resume", CONV, "--image-out", out], { stdin: "redo" })));
     assert.deepEqual(json.images, [path.join(out, "earlier.png")]);
+  } finally {
+    setAgyHomeForTest(null);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ask --image-out that made an image passes with an empty answer", async () => {
+  const { root, brain, out } = imageFixture();
+  try {
+    setRunReviewForTest(async () => {
+      fs.writeFileSync(path.join(brain, "cube.png"), "png");
+      return reply({ conversationId: CONV, text: "", response: "" });
+    });
+    const text = await captureStdout(() => handleAsk(["--resume", CONV, "--image-out", out], { stdin: "draw" }));
+    assert.equal(text, `[note] The model returned no text.\n[image] ${path.join(out, "cube.png")}\n[conversation] ${CONV}\n`);
   } finally {
     setAgyHomeForTest(null);
     fs.rmSync(root, { recursive: true, force: true });

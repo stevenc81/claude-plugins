@@ -4,6 +4,7 @@ import process from "node:process";
 import {
   AgyAuthError,
   AgyConnectionError,
+  AgyContentFilterError,
   AgyInterruptedError,
   AgyModelError,
   AgyQuotaError,
@@ -54,6 +55,30 @@ function isQuotaAgyError(line) {
     return QUOTA_MARKER.test(line);
   }
   return e?.status === "RESOURCE_EXHAUSTED" || e?.code === 429;
+}
+
+// agy 1.4.5 stops a run when content safety filters block a response, where
+// older versions retried without end. Its binary has the error text "response
+// blocked by content safety filters" and the stop reason
+// STOP_REASON_CONTENT_FILTER. Not seen live: which field holds the stop
+// reason. The runner checks `stop_reason` on the result and on each step, the
+// JSON name that the binary has for it. The model's answer is never checked,
+// because it can mention the filters for other reasons.
+const CONTENT_FILTER_MARKER = /blocked by content safety filters|STOP_REASON_CONTENT_FILTER/i;
+const CONTENT_FILTER_STOP = "STOP_REASON_CONTENT_FILTER";
+
+function contentFilterError(detail) {
+  return new AgyContentFilterError(`Content safety filters blocked Gemini's response, so agy stopped the run: ${detail}`, {
+    suggestion: "Rephrase the request, then rerun."
+  });
+}
+
+// The first of agy's own error texts that reports a block, or null: each
+// `AGY_ERROR:` line on stderr, JSON or plain text, and the result's error.
+function contentFilterText(stderr, result) {
+  const lines = String(stderr ?? "").split("\n").filter((line) => line.startsWith("AGY_ERROR:"));
+  const resultError = typeof result?.error === "string" ? result.error : "";
+  return [...lines, resultError].find((text) => CONTENT_FILTER_MARKER.test(text)) ?? null;
 }
 
 function secondsForGoDuration(ms) {
@@ -184,11 +209,12 @@ function errorForExit({ code, signal, result, plain, stderr, model }) {
  * (see partProblem), with nothing new in the hook's `denialLog`; otherwise
  * nothing more is sent and the run fails with an error that names the part.
  * stdin closes after the prompt. agy's usage in the last `result` covers the
- * whole session. agy applies `--json-schema` to every turn of a session, so a
- * part would come back as JSON, not PART_ACK. With `jsonSchema`, the parts
- * therefore go in a session without it, and the prompt then goes with it into
- * the same conversation (`--conversation`), in the time that is left. The
- * result's usage is then the second session's.
+ * whole session. agy applies `--json-schema` to every turn of a session (see
+ * the README, "/gemini:ask", the bullet on the message cap). So a part would
+ * come back as JSON, not PART_ACK. With `jsonSchema`, the parts therefore go
+ * in a session without it, and the prompt then goes with it into the same
+ * conversation (`--conversation`), in the time that is left. The result's
+ * usage is then the second session's.
  * When the session grows past agy's compaction threshold, agy replaces the
  * earlier turns with a summary (a `checkpoint` step). Gemini then no longer
  * has the whole input, so a session with parts that compacts fails too. Any
@@ -286,6 +312,7 @@ function runSession({
     let compacted = false;
     let errorStep = false; // an error_message step so far
     let lostTask = false; // an error_message step came before a compaction
+    let filterDetail = null; // what reported a content-safety block in stdout, if anything
     const searchSteps = new Map(); // step key -> last state of a search_web step
 
     // stdin closes after the last message, which ends the session after its turn.
@@ -306,7 +333,14 @@ function runSession({
         return;
       }
       const step = event?.event === "step_update" ? event.step_update : null;
-      if (step?.step_type === "error_message") errorStep = true;
+      if (step?.stop_reason === CONTENT_FILTER_STOP) filterDetail ??= `stop reason ${CONTENT_FILTER_STOP}`;
+      if (step?.step_type === "error_message") {
+        errorStep = true;
+        // Not seen live: which field of the step holds its text, so the
+        // whole step is checked.
+        const text = JSON.stringify(step);
+        if (CONTENT_FILTER_MARKER.test(text)) filterDetail ??= text;
+      }
       if (step?.step_type === "checkpoint") {
         compacted = true;
         if (errorStep) lostTask = true;
@@ -316,9 +350,10 @@ function runSession({
       }
       if (event?.event !== "result") return;
       result = event.result;
+      if (result?.stop_reason === CONTENT_FILTER_STOP) filterDetail ??= `stop reason ${CONTENT_FILTER_STOP}`;
       answered += 1;
       if (answered < messages.length) {
-        if (!partProblem(result, denialLog) && !compacted) sendNext();
+        if (!partProblem(result, denialLog) && !compacted && !filterDetail) sendNext();
         else proc.stdin?.end?.();
       }
     };
@@ -415,6 +450,13 @@ function runSession({
           return;
         }
         readLine(partLine);
+        // Before the exit code and the status: agy can report a block and
+        // still end with exit 0 and status SUCCESS.
+        const blocked = filterDetail ?? contentFilterText(stderr, result);
+        if (blocked) {
+          reject(contentFilterError(blocked));
+          return;
+        }
         if (code !== 0) {
           reject(errorForExit({ code, signal, result, plain, stderr, model }));
           return;

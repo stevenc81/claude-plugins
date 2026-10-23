@@ -9,6 +9,7 @@ import { runReview } from "../scripts/lib/agy-runner.mjs";
 import {
   AgyAuthError,
   AgyConnectionError,
+  AgyContentFilterError,
   AgyInterruptedError,
   AgyModelError,
   AgyQuotaError,
@@ -600,6 +601,68 @@ test("searches counts each search_web step once, ACTIVE then DONE or ERROR, and 
   });
   const result = await runReview({ prompt: "x", spawnFn: () => proc });
   assert.deepEqual(result.searches, { attempted: 3, succeeded: 2 });
+});
+
+// agy 1.4.5 stops on a content-safety block. The texts and the stop reason are
+// from its binary; these shapes were not seen live.
+const isContentFilterError = (err) =>
+  err instanceof AgyContentFilterError &&
+  /content safety filters blocked/i.test(err.message) &&
+  /rephrase/i.test(err.suggestion) &&
+  !/sign|version/i.test(err.suggestion);
+
+test("an AGY_ERROR line about a content-safety block gives the content-safety error", async () => {
+  const line = 'AGY_ERROR: {"status":"UNKNOWN","code":500,"message":"response blocked by content safety filters"}';
+  const { proc } = makeFakeProc({ stderrChunks: [`${line}\n`], exitCode: 3 });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => proc }), isContentFilterError);
+});
+
+test("an AGY_ERROR line about a content-safety block fails also on exit 0 with a SUCCESS result", async () => {
+  const line = 'AGY_ERROR: {"status":"UNKNOWN","message":"response blocked by content safety filters"}';
+  const { proc } = makeFakeProc({ stdoutChunks: [agyStream({ response: "partial" })], stderrChunks: [`${line}\n`], exitCode: 0 });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => proc }), isContentFilterError);
+});
+
+test("a plain-text AGY_ERROR line about a content-safety block gives the content-safety error", async () => {
+  const line = "AGY_ERROR: response blocked by content safety filters";
+  const { proc } = makeFakeProc({ stderrChunks: [`warming up\n${line}\n`], exitCode: 3 });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => proc }), isContentFilterError);
+});
+
+test("an error step about a content-safety block fails also on exit 0 with a SUCCESS result and an empty response", async () => {
+  // The step's text field is a guess; the runner checks the whole step.
+  const blocked = { step_index: 3, state: "DONE", step_type: "error_message", message: "response blocked by content safety filters" };
+  const { proc } = makeFakeProc({
+    stdoutChunks: [INIT_EVENT + "\n", `${stepEvent(blocked)}\n`, `${resultEvent({ response: "" })}\n`],
+    exitCode: 0
+  });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => proc }), isContentFilterError);
+});
+
+test("a result with status ERROR and a content-safety error text gives the content-safety error", async () => {
+  const error = "The response was blocked by content safety filters. Please try rephrasing your request.";
+  const { proc } = makeFakeProc({ stdoutChunks: [agyStream({ status: "ERROR", response: "", error })], exitCode: 0 });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => proc }), isContentFilterError);
+});
+
+test("the stop reason STOP_REASON_CONTENT_FILTER in a step or the result gives the content-safety error", async () => {
+  const step = makeFakeProc({
+    stdoutChunks: [
+      INIT_EVENT + "\n",
+      `${stepEvent({ step_index: 1, state: "DONE", step_type: "planner_response", stop_reason: "STOP_REASON_CONTENT_FILTER" })}\n`,
+      `${resultEvent({ response: "" })}\n`
+    ]
+  });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => step.proc }), isContentFilterError);
+  const result = makeFakeProc({ stdoutChunks: [agyStream({ response: "", stop_reason: "STOP_REASON_CONTENT_FILTER" })] });
+  await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => result.proc }), isContentFilterError);
+});
+
+test("an answer that only mentions content safety filters is a normal answer", async () => {
+  const response = "A response blocked by content safety filters shows STOP_REASON_CONTENT_FILTER.";
+  const { proc } = makeFakeProc({ stdoutChunks: [agyStream({ response })] });
+  const result = await runReview({ prompt: "x", spawnFn: () => proc });
+  assert.equal(result.text, response);
 });
 
 test("agentVersion is passed through", async () => {
