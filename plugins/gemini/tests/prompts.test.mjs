@@ -152,7 +152,8 @@ test("a subagent runs each command in the foreground, ending by itself before th
     assert.match(text, /not woken when its own background task ends/, name);
   }
   const review = fs.readFileSync(path.join(commandsDir, "review.md"), "utf8");
-  const sub = review.slice(review.indexOf("Subagent flow:"));
+  assert.ok(review.includes("\n## Subagent flow\n"), "review.md has the heading that its flow points to");
+  const sub = review.slice(review.indexOf("\n## Subagent flow\n"));
   assert.match(sub, /\nnode "\$\{CLAUDE_PLUGIN_ROOT\}[^\n]* review --timeout-ms 540000[^\n]*\n/);
   assert.match(sub, /600000/);
 });

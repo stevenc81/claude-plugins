@@ -1,6 +1,6 @@
 ---
 description: Fact-check conversation content via Antigravity CLI with live web grounding
-argument-hint: '[--model <id>] [--no-fallback] [focus text]'
+argument-hint: '[--model <id>] [focus text]'
 disable-model-invocation: false
 allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" *)
 ---
@@ -27,11 +27,9 @@ Building the command:
 - Do not paste `$ARGUMENTS` into the shell command. Build the arguments yourself.
 - Drop `--wait` and `--background` from the raw arguments. Pass `--json` as its own argument.
 - If the raw arguments include `--model <id>`, pass `--model` and the ID as two arguments, with the ID single-quoted. Leave `--model` out when the caller gave none. The plugin then uses its default model.
-- If the raw arguments include `--no-fallback`, pass it as its own argument. Then a failed run is not retried on Flash.
 - Pass the rest of the raw arguments (the focus text) as ONE single-quoted argument, after a `--` argument, so text that starts with `--` is not read as a flag. Write each `'` inside it as `'\''`. Leave out both when there is no focus text.
 - Example: for the raw arguments `check Node's "LTS" date`, the arguments are `-- 'check Node'\''s "LTS" date'`.
 - Example: for the raw arguments `--model gemini-4-argon-medium focus on dates`, the arguments are `--model 'gemini-4-argon-medium' -- 'focus on dates'`.
-- Example: for the raw arguments `--model gemini-4-argon-high --no-fallback check the dates`, the arguments are `--model 'gemini-4-argon-high' --no-fallback -- 'check the dates'`.
 
 Flow:
 - If you are a subagent, run the review in the foreground: see "Subagent flow" below. A subagent is not woken when its own background task ends, so its result would never come back.
@@ -49,7 +47,8 @@ GEMINI_EOF_7Q2KX9WM`,
 - After launching, tell the user: "Gemini review started in the background. You will be notified when it finishes." Then stop.
 - When it finishes, return its stdout verbatim, exactly as-is. If the command exits nonzero, return the exit code and its stderr verbatim instead. The error and its next step are there, and stdout is empty.
 
-Subagent flow:
+## Subagent flow
+
 - Run the same command in the foreground, with the `Bash` timeout 600000 (10 minutes) and `--timeout-ms 540000`. The review then ends by itself within 10 minutes, with a cut-off report or an error:
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" review --timeout-ms 540000 -- 'check the "LTS" date' <<'GEMINI_EOF_7Q2KX9WM'

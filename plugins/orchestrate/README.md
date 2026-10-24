@@ -1,6 +1,6 @@
 # orchestrate
 
-A skill that turns one Claude Code session into the conductor of a small agent team. The team can mix Claude, Codex and Gemini. For each job, the skill picks a model and an effort level from a table of public benchmark results. It also says how to brief each agent, how to check a claim with three vendors, and what to do when a vendor hits a usage limit.
+A skill that turns one Claude Code session into the conductor of a small agent team. The team can mix Claude, Codex and Gemini. For each job, the skill picks a model and an effort level from a table of public benchmark results. It also says how to brief each agent and how to check a claim with three vendors.
 
 ## Goal
 
@@ -11,8 +11,8 @@ The rules are in [`skills/conduct/SKILL.md`](skills/conduct/SKILL.md). The bench
 ## What you need
 
 - Claude Code.
-- The Codex CLI (`codex`), signed in.
-- The Antigravity CLI (`agy`), signed in. The [gemini plugin README](../gemini/README.md) explains the setup.
+- The Codex CLI (`codex`), signed in. It is needed only for jobs that the plan gives to Codex.
+- The Antigravity CLI (`agy`), signed in. It is needed only for jobs that the plan gives to Gemini. The [gemini plugin README](../gemini/README.md) explains the setup.
 
 The plugin depends on the `gemini` plugin from this marketplace. It runs Codex through the Codex CLI, so it does not need OpenAI's codex plugin.
 
@@ -25,16 +25,6 @@ The plugin depends on the `gemini` plugin from this marketplace. It runs Codex t
 ```
 
 Then ask for an agent team in plain words, or type `/orchestrate:conduct`.
-
-## Usage limits
-
-When a vendor stops a job at its usage limit, the skill reads the reset time from these files:
-
-- `~/.claude/statusline-cache/usage.dat` for Claude
-- `~/.claude/statusline-cache/codex-usage.dat` for Codex
-- `~/.claude/statusline-cache/gemini-usage.dat` for Gemini
-
-A custom status line script writes them, and this plugin does not include one. Without the files, the skill asks you for the reset time.
 
 ## License
 

@@ -16,12 +16,10 @@ function formatTokens(tokens) {
   return ` (tokens: ${input ?? "?"} in / ${output ?? "?"} out)`;
 }
 
-function formatHeader({ reviewLabel, target, tokens, agentVersion, model, requestedModel, fellBack }) {
+function formatHeader({ reviewLabel, target, tokens, agentVersion, model }) {
   const parts = [`${reviewLabel}: ${target}`];
   if (agentVersion) parts.push(`agy ${agentVersion}`);
-  if (model) {
-    parts.push(fellBack && requestedModel ? `model: ${model} (fell back from ${requestedModel})` : `model: ${model}`);
-  }
+  if (model) parts.push(`model: ${model}`);
   return parts.join("  |  ") + formatTokens(tokens);
 }
 
@@ -51,8 +49,6 @@ export function renderReviewResult({
   tokens,
   agentVersion,
   model = null,
-  requestedModel = null,
-  fallbackReason = null,
   deniedActions = [],
   timedOut = false,
   compacted = false,
@@ -69,14 +65,9 @@ export function renderReviewResult({
     target: label,
     tokens,
     agentVersion,
-    model,
-    requestedModel,
-    fellBack: fallbackReason != null
+    model
   });
   const lines = [header, "=".repeat(Math.min(header.length, 80)), ""];
-  if (fallbackReason != null) {
-    lines.push(`${requestedModel ?? "The review model"} failed, so ${model} ran the review instead. Reason: ${fallbackReason}`, "");
-  }
   const refused = describeDeniedActions(deniedActions);
   if (timedOut) {
     lines.push("agy hit its time limit and cut the review off. Results may be incomplete.", "");

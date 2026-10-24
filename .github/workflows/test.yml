@@ -31,3 +31,6 @@ jobs:
       - name: specialists
         working-directory: plugins/specialists
         run: python3 -I -B -m unittest discover -s tests
+      - name: self-improve
+        working-directory: plugins/self-improve
+        run: python3 -I -B scripts/test_score.py

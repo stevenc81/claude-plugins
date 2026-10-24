@@ -6,13 +6,11 @@ const BOOLEAN_FLAGS = new Set(["--json"]);
 /**
  * `valueFlags` adds command-specific flags that take a value. `listFlags` take
  * a value and may repeat; their values are collected into an array.
- * `booleanFlags` adds command-specific flags that take no value.
  */
-export function parseArgs(argv, { allowPositionals = false, valueFlags = [], listFlags = [], booleanFlags = [] } = {}) {
+export function parseArgs(argv, { allowPositionals = false, valueFlags = [], listFlags = [] } = {}) {
   const valueFlagSet = new Set([...VALUE_FLAGS, ...valueFlags, ...listFlags]);
   const listFlagSet = new Set(listFlags);
-  const booleanFlagSet = new Set([...BOOLEAN_FLAGS, ...booleanFlags]);
-  const validFlagsForHelp = [...valueFlagSet, ...booleanFlagSet].sort();
+  const validFlagsForHelp = [...valueFlagSet, ...BOOLEAN_FLAGS].sort();
   const options = {};
   const setValue = (name, value) => {
     const key = name.slice(2);
@@ -58,7 +56,7 @@ export function parseArgs(argv, { allowPositionals = false, valueFlags = [], lis
       continue;
     }
 
-    if (booleanFlagSet.has(name)) {
+    if (BOOLEAN_FLAGS.has(name)) {
       if (inlineValue != null) {
         throw new ConfigError(`Flag ${name} does not take a value.`, {
           suggestion: `Use ${name} without =...`

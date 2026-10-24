@@ -46,17 +46,16 @@ Fact-checks content from the current conversation with live web grounding. By de
 /gemini:review check the second paragraph above
 /gemini:review focus on the version numbers
 /gemini:review --model gemini-4-argon-medium check the dates above
-/gemini:review --model gemini-4-argon-high --no-fallback check the dates above
 ```
 
-The flags are `--model <id>` and `--no-fallback`. Anything else after `/gemini:review` is plain natural language, not fixed syntax. Claude uses it in one of two ways:
+The only flag is `--model <id>`. Anything else after `/gemini:review` is plain natural language, not fixed syntax. Claude uses it in one of two ways:
 
 - To choose what gets reviewed. Phrases like `check the second paragraph above` or `review what I just pasted` point Claude at specific text instead of its previous reply.
 - To steer attention. Phrases like `focus on the version numbers` tell the agent which claims matter most. It still reports any other real issue it finds.
 
 When another skill or agent calls `/gemini:review` and gives it text, it reviews exactly that text.
 
-In the main session, the review always runs as a background task, and Claude Code tells you when it finishes. A subagent runs it in the foreground with a 9-minute limit instead, because an idle subagent is not woken when its own background task ends (checked twice in October 2026). If that review is cut off, the subagent gives its caller the command to run in the background. In October 2026, a review of three short claims took 93 seconds on Gemini 4 Argon and 219 seconds on Gemini 3.8 Flash. A review of six claims on Flash took 11.5 minutes. A foreground run stops after 9 minutes, and a fallback to Flash adds a second run. The run time depends on the number of claims, not the length of the text.
+In the main session, the review always runs as a background task, and Claude Code tells you when it finishes. A subagent runs it in the foreground with a 9-minute limit instead, because an idle subagent is not woken when its own background task ends (checked twice in October 2026). If that review is cut off, the subagent gives its caller the command to run in the background. In October 2026, a review of three short claims took 93 seconds on Gemini 4 Argon and 219 seconds on Gemini 3.8 Flash. A review of six claims on Flash took 11.5 minutes. A foreground run stops after 9 minutes. The run time depends on the number of claims, not the length of the text.
 
 How it works:
 - Claude pipes the selected text to the companion script through a quoted heredoc. No temp files, no copy and paste.
@@ -66,7 +65,7 @@ How it works:
 - The report ends with a `[grounding]` footer. It counts the web searches that `agy` ran and how many succeeded, counts the cited source URLs, and lists any tools `agy` refused. `agy` streams each search step twice (ACTIVE, then DONE or ERROR), so the plugin counts each step once. The prompt requires a source for a `supported` verdict, but the schema does not check it. Only an `http` or `https` URL counts as a source, after spaces are trimmed. So the plugin changes a `supported` claim with no such URL to `uncertain` and says so in its `reasoning`, and then changes a `trustworthy` overall to `mixed`. This holds for the text and the `--json` output.
 - Input is capped at 40KB. Longer content is cut on a line boundary, and the report says so.
 
-Model: reviews run on `gemini-4-argon-high` by default. `--model <id>` picks another model from `agy models`. If the run fails, the plugin can retry once on `gemini-3.8-flash-high`. `--no-fallback` turns that retry off, for a caller that would discard a Flash result. See [Which model runs the review?](#which-model-runs-the-review) for the rules. The header and the `--json` output show which model answered and why a fallback happened.
+Model: reviews run on `gemini-4-argon-high` by default. `--model <id>` picks another model from `agy models`. A failed run is not retried on another model. See [Which model runs the review?](#which-model-runs-the-review). The header and the `--json` output show which model answered.
 
 Limitations:
 - Search quality depends on what the agent finds. Niche or paywalled sources may be missed. Read `uncertain` as "search did not find it," not "it is wrong."
@@ -83,11 +82,11 @@ Output states:
 | Compacted | `compacted` is `true`: Gemini worked from a summary of its earlier steps | `review (N bytes, degraded)` plus a line saying so |
 | Ungrounded | `ungrounded` is `true`: the review has claims, but no web search succeeded. A `trustworthy` overall becomes `mixed` | `review (N bytes, degraded)` plus a line saying so |
 
-`model` is the model that answered. `requestedModel` is the model the plugin tried first. `fellBack` is `true` when Flash answered, and `fallbackReason` holds the error from the first run (otherwise `null`). A text report that fell back says so in the header and on the first line.
+`model` is the model that answered.
 
 `deniedActions` lists any tools `agy` refused. When a refusal left the model with no answer, `parseError` names the refused tools. `searches` is `{attempted, succeeded}`.
 
-The exit code is `0` in these states, because the CLI ran. A nonzero exit means the plugin itself failed (spawn error, sign-in, unknown model, used-up quota, a content-safety block, a hard timeout, or a time limit hit before Gemini wrote any text). After a fallback, a nonzero exit means both models failed, and the error names both causes. To branch on answer quality, read `parseError`, `timedOut`, `compacted` and `ungrounded` from `--json` output.
+The exit code is `0` in these states, because the CLI ran. A nonzero exit means the plugin itself failed (spawn error, sign-in, unknown model, used-up quota, a content-safety block, a hard timeout, or a time limit hit before Gemini wrote any text). To branch on answer quality, read `parseError`, `timedOut`, `compacted` and `ungrounded` from `--json` output.
 
 ### `/gemini:ask`
 
@@ -105,7 +104,7 @@ Sends a prompt to a model and returns its answer exactly as the model wrote it.
 /gemini:ask --json summarize this thread
 ```
 
-- `--model <id>` takes any ID from `agy models`. The default is `gemini-3.8-flash-medium`. An unknown ID fails with a message telling you to run `agy models`. `/gemini:ask` has no fallback model.
+- `--model <id>` takes any ID from `agy models`. The default is `gemini-3.8-flash-medium`. An unknown ID fails with a message telling you to run `agy models`.
 - Gemini 4 Argon (`gemini-4-argon-low`, `-medium`, `-high`) uses its own weekly quota. `/gemini:review` uses the same quota, so Argon asks leave fewer Argon reviews.
 - The prompt can be up to 720,000 bytes, with its file and folder lists and the tool rule. That was about 165k tokens in a test. Pass larger inputs with `--file`: Gemini then reads only the pages it looks for.
 - `agy` 1.4.3 shows the model only the first 192,000 bytes of a message, counting its own wrapper of about 400 bytes. It drops the rest without an error. On 1.4.5 the cap is still about 192,000 bytes (one run), and the model now sees a `<truncated N bytes>` note and may try tools. I have not checked whether 1.4.3 shows that note. So a prompt over 190,000 bytes goes in parts of up to 180,000 bytes, cut at line ends, each in its own turn of one `agy` session. Each part asks Gemini to reply with only OK. The next part goes only after that reply, in any case, with spaces or a final period. Any other reply, a refused tool or an error stops the run with an error that names the part. The last message holds the text from the arguments, the file and folder lists and the tool rule. Only its answer is returned. `tokens` counts the whole session. `agy` applies `--json-schema` to every turn of a session, also on 1.4.5 (2 runs), although its `--help` says the schema is "only applicable to the final result". So with `--schema` the parts go in one session without the schema, and the last message goes with the schema into the same conversation, in a second session, in the time that is left. `tokens` then comes from the second session. I have not checked whether it counts the parts' turns, or tested this path live.
@@ -181,7 +180,7 @@ Gemini reads media that you pass with `--file`, or that sits in a `--dir` folder
 Setup runs `agy` in an empty temp folder, and the [tool gate](#the-tool-gate) allows no tool there, so the canary cannot read or run anything. It spends one model call. It sends a canary prompt ("Reply with the single word OK") and checks that the reply echoes it. That proves sign-in works and the prompt really reached the model. A CLI change that makes `agy` exit 0 without seeing the prompt shows up as `Prompt check: FAILED`.
 
 Two free checks run alongside it:
-- **Model check** reads `agy models` and looks for the review model (Argon), the fallback model (Flash) and the `/gemini:ask` default. `ok` means all three are listed. `degraded` means one is missing: reviews still run on the other review model, or only `/gemini:ask` without `--model` is affected. `FAILED` (exit 1) means both review models are missing. `unknown` means `agy models` could not run. `--json` reports each model under `models.primary`, `models.fallback` and `models.ask`.
+- **Model check** reads `agy models` and looks for the review model (Argon) and the `/gemini:ask` default. `ok` means both are listed. `degraded` means only the `/gemini:ask` default is missing, so only `/gemini:ask` without `--model` is affected. `FAILED` (exit 1) means the review model is missing. `unknown` means `agy models` could not run. `--json` reports each model under `models.primary` and `models.ask`.
 - **Gemini quota** reads `agy -p /usage` and shows the remaining percent with reset times: the weekly and 5-hour limits for Gemini Flash, and the weekly limit for Gemini 4 Argon. If that call fails, setup still runs and shows the quota as unknown. `--json` includes it as `quota`, with Argon under `quota.argon` (`null` when `agy` does not report Argon).
 
 When `agy --version` is newer than the tested version (`TESTED_AGY_VERSION` in `scripts/gemini-companion.mjs`), setup prints a warning that names the smoke test to run (see [Development](#development)). It does not fail. `--json` has the warning in `versionWarning` (otherwise `null`). `--json` always has `nextSteps`, the same steps as the text report (empty when all is well), and `promptDetail` when the canary ran. When setup fails before the canary or the canary call fails, `--json` prints the fields of the text report.
@@ -204,7 +203,7 @@ For each call, the plugin:
 1. Runs `agy` with every flag in `--flag=value` form: `--model`, one `--add-dir` for each `/gemini:ask --dir` folder, `--conversation` for `/gemini:ask --resume`, `--input-format=stream-json`, `--output-format=stream-json`, `--disable-slash-commands`, and `--print-timeout`. Reviews and `/gemini:ask --schema` add `--json-schema`. `agy` runs in an empty temp folder that holds the hook (see [The tool gate](#the-tool-gate))
 2. Writes the prompt to `agy`'s stdin as one stream-json line, `{"event":"user","message":{"role":"user","content":"<prompt>"}}`. A long `/gemini:ask` prompt goes as several lines, each after the `result` of the one before (see [`/gemini:ask`](#geminiask)). Then it closes stdin, so `agy` ends after the last turn
 3. Reads `agy`'s events, one JSON object per line, until stdout closes. It keeps the last `result` event: the answer (`structured_output` when a schema was used, otherwise `response`), token usage, refused tools and the conversation ID. It also counts the search steps and watches for error and compaction steps. A run with no `result` event is an error
-4. Fails on a content-safety block that `agy` reports in an `AGY_ERROR` line, an error step, the result's error or a stop reason, also when the run ends with exit 0 and status SUCCESS. It never checks the answer text (agy 1.4.5, not seen live). Checks `agy`'s stderr for its timeout notice, and on a nonzero exit for `AGY_ERROR`, unknown model, used-up quota, and sign-in errors, in that order. The quota check comes before the sign-in check, because a quota message can contain words such as "sign in"
+4. Fails on a content-safety block that `agy` reports in an `AGY_ERROR` line, an error step, the result's error or a stop reason, also when the run ends with exit 0 and status SUCCESS. It never checks the answer text (agy 1.4.5, not seen live). Checks `agy`'s stderr for its timeout notice, and on a nonzero exit for `AGY_ERROR`, unknown model, used-up quota, and sign-in errors, in that order. The quota check comes before the sign-in check, because a quota message can contain words such as "sign in".
 5. For reviews, validates the result against the schema, resolves redirect links, and renders the report
 
 The prompt travels on stdin, so `ps` does not show it.
@@ -223,20 +222,13 @@ Yes. This plugin is Antigravity-specific and runs independently of other plugins
 
 ### Which model runs the review?
 
-`gemini-4-argon-high` by default, with one fallback to `gemini-3.8-flash-high`. `--model <id>` picks another model, for example `gemini-4-argon-medium` for a cheaper check. The fallback rules are the same for a chosen model.
+`gemini-4-argon-high` by default. `--model <id>` picks another model, for example `gemini-4-argon-medium` for a cheaper check. The review runs once, on that model. If the run fails, the plugin reports the error and runs no other model. Examples: a sign-in error, an unknown model, a used-up quota, a content-safety block, or a hard timeout.
 
-The fallback rules:
-- If the first run fails for any other reason than sign-in, a content-safety block or a hard timeout, the plugin runs the review once on Flash. If the failed model was Flash at any effort level, there is no second run, because every Flash level uses the same quota. The most likely cause is a used-up Argon quota. An unknown model or another `agy` error also falls back.
-- A sign-in error does not fall back, because Flash would fail the same way.
-- A content-safety block does not fall back, because Flash would get the same text, and its answer would hide the block. I have not checked whether Flash is blocked too.
-- A hard timeout does not fall back, because it used the whole time budget.
-- The timeout is one budget for both runs. Flash gets only the time that is left. If less than 60 seconds are left, the plugin skips Flash and reports the Argon error.
-- A run that `agy` cut off at its own time limit, with a usable partial result, is not an error. The plugin returns that result, marked as timed out, and does not fall back. A cutoff before any answer is an error, and it does not fall back either.
-- The first error is never hidden. The report and `fallbackReason` show it.
+- A run that `agy` cut off at its own time limit, with a usable partial result, is not an error. The plugin returns that result, marked as timed out. A cutoff before any answer is an error.
 
-Why two models: Argon was faster in a test in October 2026 (93 seconds against 219 seconds for the same three claims). But Argon has only a weekly limit, separate from Flash. One review of three claims used about 1.4% of it. Flash keeps reviews working when the Argon limit runs out.
+Why Argon: it was faster in a test in October 2026 (93 seconds against 219 seconds for the same three claims). Argon has only a weekly limit, separate from Flash. One review of three claims used about 1.4% of it.
 
-As of `agy` 1.4.2, `agy models` lists `gemini-4-argon-{low,medium,high}`, `gemini-3.8-flash-{high,medium,low}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}` and `gpt-oss-120b-medium`. `/gemini:setup` checks both review models and the `/gemini:ask` default, so a rename shows up there first.
+As of `agy` 1.4.2, `agy models` lists `gemini-4-argon-{low,medium,high}`, `gemini-3.8-flash-{high,medium,low}`, `claude-opus-5-5-{low,medium,high}`, `claude-sonnet-5-5-{low,medium,high}` and `gpt-oss-120b-medium`. `/gemini:setup` checks the review model and the `/gemini:ask` default, so a rename shows up there first.
 
 ### Why is a grounded review slow?
 

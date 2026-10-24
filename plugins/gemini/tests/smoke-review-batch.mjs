@@ -78,7 +78,6 @@ function runOne(index, input) {
         killed,
         elapsedS,
         model: payload?.model ?? null,
-        fellBack: payload?.fellBack ?? false,
         overall: parsed?.overall ?? null,
         claims: Array.isArray(parsed?.claims) ? parsed.claims.length : 0,
         sources,
@@ -101,7 +100,7 @@ async function pool(items, concurrency, fn) {
       const r = await fn(i, items[i]);
       results[i] = r;
       const tag = r.ok ? "PASS" : "FAIL";
-      const fb = `${r.fellBack ? " (fell back)" : ""}${r.timedOut ? " (timedOut)" : ""}`;
+      const fb = r.timedOut ? " (timedOut)" : "";
       const extra = r.ok ? "" : `  <- ${r.parseError || r.stderr || (r.killed ? "killed (timeout)" : "exit " + r.code)}`;
       console.log(
         `[${String(r.index + 1).padStart(2)}/${items.length}] ${tag}  ${String(r.elapsedS).padStart(5)}s  model=${r.model ?? "?"}${fb}  overall=${r.overall ?? "-"}  claims=${r.claims}  sources=${r.sources}${r.deniedActions.length ? `  refused=${r.deniedActions.map((a) => a.action).join(",")}` : ""}${extra}`

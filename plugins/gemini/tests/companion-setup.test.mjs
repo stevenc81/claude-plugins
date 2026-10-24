@@ -11,7 +11,6 @@ import {
   setRunCommandForTest,
   compareVersion,
   PRIMARY_REVIEW_MODEL,
-  FALLBACK_REVIEW_MODEL,
   TESTED_AGY_VERSION
 } from "../scripts/gemini-companion.mjs";
 import { AgyAuthError, ConfigError } from "../scripts/lib/errors.mjs";
@@ -176,49 +175,26 @@ test("setup fails the prompt check when agy exits 0 without acting on the prompt
   assert.equal(exitCode, 1);
 });
 
-test("setup model check reports ok when both review models are listed by agy models", async () => {
+test("setup model check reports ok when the review model is listed by agy models", async () => {
   setRunReviewForTest(canaryOk);
   const { out, exitCode, line } = await runSetup();
   const modelLine = line("Model check:");
   assert.match(modelLine, /^Model check:   ok, /);
   assert.match(modelLine, new RegExp(PRIMARY_REVIEW_MODEL));
-  assert.match(modelLine, new RegExp(FALLBACK_REVIEW_MODEL));
   assert.match(out, /Ready\. Try/);
   assert.notEqual(exitCode, 1);
 });
 
-test("setup model check is degraded (exit 0) when Argon is not listed: reviews fall back to Flash", async () => {
+test("setup model check FAILS and exits 1 when the review model is not listed", async () => {
   setRunReviewForTest(canaryOk);
   setRunCommandForTest(fakeCommands({ models: MODELS_TSV.replace(/^gemini-4-argon-high\t.*\n/m, "") }));
   const { out, exitCode, line } = await runSetup();
-  assert.match(line("Model check:"), /^Model check:   degraded, review model 'gemini-4-argon-high' is not listed; reviews will fall back to 'gemini-3\.8-flash-high'/);
-  assert.match(out, /Run `agy models`/);
-  assert.notEqual(exitCode, 1);
-  const json = JSON.parse((await runSetup(["--json"])).out);
-  assert.deepEqual(json.models.primary, { model: PRIMARY_REVIEW_MODEL, ok: false });
-  assert.deepEqual(json.models.fallback, { model: FALLBACK_REVIEW_MODEL, ok: true });
-});
-
-test("setup model check is degraded (exit 0) when only the Flash fallback is not listed", async () => {
-  setRunReviewForTest(canaryOk);
-  setRunCommandForTest(fakeCommands({ models: MODELS_TSV.replace(/^gemini-3\.8-flash-high\t.*\n/m, "") }));
-  const { exitCode, line } = await runSetup();
-  assert.match(line("Model check:"), /^Model check:   degraded, fallback 'gemini-3\.8-flash-high' is not listed; reviews still run on 'gemini-4-argon-high'/);
-  assert.notEqual(exitCode, 1);
-});
-
-test("setup model check FAILS and exits 1 when neither review model is listed", async () => {
-  setRunReviewForTest(canaryOk);
-  setRunCommandForTest(
-    fakeCommands({
-      models: MODELS_TSV.replace(/^gemini-3\.8-flash-high\t.*\n/m, "").replace(/^gemini-4-argon-high\t.*\n/m, "")
-    })
-  );
-  const { out, exitCode, line } = await runSetup();
-  assert.match(line("Model check:"), /FAILED/);
-  assert.match(out, /Neither review model is listed/);
+  assert.match(line("Model check:"), /FAILED, review model 'gemini-4-argon-high' is not listed/);
+  assert.match(out, /The review model is not listed/);
   assert.match(out, /agy models/);
   assert.equal(exitCode, 1);
+  const json = JSON.parse((await runSetup(["--json"])).out);
+  assert.deepEqual(json.models.primary, { model: PRIMARY_REVIEW_MODEL, ok: false });
 });
 
 test("setup model check is unknown (exit 0) when agy models fails", async () => {
@@ -290,7 +266,7 @@ test("setup --json includes promptOk, modelStatus, per-model results and quota",
   assert.equal(parsed.transportOk, true);
   assert.equal(parsed.modelStatus, "ok");
   assert.deepEqual(parsed.models.primary, { model: PRIMARY_REVIEW_MODEL, ok: true });
-  assert.deepEqual(parsed.models.fallback, { model: FALLBACK_REVIEW_MODEL, ok: true });
+  assert.deepEqual(Object.keys(parsed.models), ["primary", "ask"]);
   assert.deepEqual(parsed.models.ask, { model: "gemini-3.8-flash-medium", ok: true });
   assert.deepEqual(parsed.quota, {
     weekly: { remainingPercent: 97, resetTime: "2026-10-11T07:37:02Z" },

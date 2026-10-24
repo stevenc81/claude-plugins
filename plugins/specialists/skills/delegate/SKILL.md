@@ -7,7 +7,7 @@ Only the main session follows this skill. If you are an agent, ignore it.
 
 # Delegate
 
-Skip this skill for other agent types, such as `Explore`.
+Skip this skill for other agent types, such as `Explore`. If the job must call an MCP tool itself, run it as general-purpose, and skip the rest of this skill.
 
 Terms:
 
@@ -34,8 +34,9 @@ Terms:
 1. If `check` printed `OK` and no `updated` line, and `specialist-<area>` is in this session's agent types, call the Agent tool with `subagent_type: specialist-<area>`.
 2. If `check` printed `missing file`, run `agent.py create` for the area first. Never run the job as general-purpose.
 3. After `create`, or when `check` printed `updated`, use the bridge. Use it also when `check` printed `OK` but `specialist-<area>` is not in this session's agent types, and no bridge ran for this area in this session. The bridge: start `sleep 30` with the Bash tool and `run_in_background: true`. Then end the turn, and say in one line that the specialist starts in the next turn. The reason: Claude Code loads a new or changed agent file only for a later turn, and a changed file took about 25 seconds in tests. In the turn that the task's notification starts, run `agent.py check '<area>'` first. Call `specialist-<area>` only if it prints `OK`.
-4. A specialist has no MCP tools. If the job needs an MCP tool, make those MCP calls yourself, and give their output to the specialist in its brief, or act on its report.
-5. Do not run the job in these cases:
+4. Give the specialist the rules, the goal and the job in its brief. Its memory carries only facts and methods about its area, and the brief wins over its memory.
+5. A specialist has no MCP tools. If the job needs an MCP tool, make those MCP calls yourself, and give their output to the specialist in its brief, or act on its report.
+6. Do not run the job in these cases:
    - `create` or `describe` exits 1, or `check` prints BAD for a reason other than `missing file`. If `create` or `describe` exits 1 because of the description or role text, first fix the text and run the command once more. This case holds only if the command fails again. Tell the user the reason.
    - `specialist-<area>` is still missing after the bridge, for example in a `claude -p` session. Tell the user that the specialist works from the next session.
    - An `agent.py` call exits with a code other than 0 or 1. Tell the user that the plugin cannot run.

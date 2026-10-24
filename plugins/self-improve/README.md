@@ -20,10 +20,9 @@ Before you start, read the notes in SKILL.md "Setup", such as how to keep a way 
 - Claude Code.
 - A target to improve: a folder, or a live target that a tool, such as an MCP server, can read and change.
 - Python 3. On macOS, it comes with the Xcode Command Line Tools: run `xcode-select --install` if it is missing.
+- What the [orchestrate](../orchestrate) plugin needs. Installing self-improve also installs orchestrate, which picks and runs the agent team. The default team runs the reviewer on Codex, so it needs the Codex CLI. To use Claude only, name the models in Setup. See SKILL.md "Team".
 
 The skill is tested only on macOS.
-
-To use agents from other vendors through [orchestrate](../orchestrate), see SKILL.md "Team".
 
 ## Install
 

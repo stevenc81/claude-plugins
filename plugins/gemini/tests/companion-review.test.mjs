@@ -8,7 +8,6 @@ import {
   setRunReviewForTest,
   setBinaryAvailableForTest,
   PRIMARY_REVIEW_MODEL,
-  FALLBACK_REVIEW_MODEL,
   ASK_TOOLS,
   REVIEW_TOOLS
 } from "../scripts/gemini-companion.mjs";
@@ -139,7 +138,6 @@ test("happy path: renders structured output with claims and sources, passes the 
   assert.doesNotMatch(out, /refused/);
   // The hardcoded primary model is surfaced in the header.
   assert.match(out, /model: gemini-4-argon-high/);
-  assert.doesNotMatch(out, /fell back/);
 });
 
 test("grounding footer warns when no tool calls AND no claim sources", async () => {
@@ -224,9 +222,7 @@ test("--json mode emits stable payload with model selection fields", async () =>
   assert.equal(payload.tokens.output_tokens, 407);
   assert.equal(Object.prototype.hasOwnProperty.call(payload, "toolCalls"), false);
   assert.equal(payload.model, "gemini-4-argon-high");
-  assert.equal(payload.requestedModel, "gemini-4-argon-high");
-  assert.equal(payload.fellBack, false);
-  assert.equal(payload.fallbackReason, null);
+  for (const key of ["requestedModel", "fellBack", "fallbackReason"]) assert.equal(Object.hasOwn(payload, key), false, key);
   assert.equal(Object.prototype.hasOwnProperty.call(payload, "downgraded"), false);
 });
 
@@ -305,7 +301,7 @@ test("header shows the agy version and the model", async () => {
   assert.doesNotMatch(out, /downgraded from/i);
 });
 
-test("--model picks the review model, and it is reported as requestedModel", async () => {
+test("--model picks the review model", async () => {
   const calls = [];
   setRunReviewForTest(async (args) => {
     calls.push(args.model);
@@ -316,48 +312,15 @@ test("--model picks the review model, and it is reported as requestedModel", asy
   );
   assert.deepEqual(calls, ["gemini-4-argon-medium"]);
   assert.equal(json.model, "gemini-4-argon-medium");
-  assert.equal(json.requestedModel, "gemini-4-argon-medium");
-  assert.equal(json.fellBack, false);
 });
-
-test("a chosen non-Flash model that fails falls back to Flash", async () => {
-  const calls = [];
-  setRunReviewForTest(async (args) => {
-    calls.push(args.model);
-    if (args.model === "gemini-4-argon-low") throw new AgyQuotaError("argon quota used up");
-    return { ...okPayload, model: args.model };
-  });
-  const json = JSON.parse(
-    await captureStdout(() => handleReview(["--model", "gemini-4-argon-low", "--json"], { stdin: "x" }))
-  );
-  assert.deepEqual(calls, ["gemini-4-argon-low", FALLBACK_REVIEW_MODEL]);
-  assert.equal(json.requestedModel, "gemini-4-argon-low");
-  assert.equal(json.fellBack, true);
-});
-
-for (const flash of ["gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low", "gemini-3.8-flash"]) {
-  test(`when the chosen model is Flash (${flash}), a failure is not retried: Flash shares one quota`, async () => {
-    const calls = [];
-    setRunReviewForTest(async (args) => {
-      calls.push(args.model);
-      throw new AgyQuotaError("flash quota used up");
-    });
-    await assert.rejects(
-      () => handleReview(["--model", flash], { stdin: "x" }),
-      (err) => err instanceof AgyQuotaError && err.message === "flash quota used up"
-    );
-    assert.deepEqual(calls, [flash]);
-  });
-}
 
 test("--model needs a value", async () => {
   setRunReviewForTest(async () => okPayload);
   await assert.rejects(() => handleReview(["--model"], { stdin: "x" }), ConfigError);
 });
 
-test("the review models are Gemini 4 Argon, then Gemini 3.8 Flash", () => {
+test("the review model is Gemini 4 Argon", () => {
   assert.equal(PRIMARY_REVIEW_MODEL, "gemini-4-argon-high");
-  assert.equal(FALLBACK_REVIEW_MODEL, "gemini-3.8-flash-high");
 });
 
 test("uses the primary model only when it succeeds", async () => {
@@ -371,39 +334,15 @@ test("uses the primary model only when it succeeds", async () => {
   assert.match(out, /model: gemini-4-argon-high/);
 });
 
-for (const [name, makeErr] of [
-  ["used-up quota", () => new AgyQuotaError('agy has no quota left for "gemini-4-argon-high": RESOURCE_EXHAUSTED')],
-  ["unlisted model", () => new AgyModelError('agy does not know the model "gemini-4-argon-high".')],
-  ["other agy error", () => new AgyConnectionError("agy --print failed (1): service unavailable")]
-]) {
-  test(`${name} on the primary falls back once to Flash and shows why`, async () => {
-    const calls = [];
-    setRunReviewForTest(async (args) => {
-      calls.push(args.model);
-      if (args.model === PRIMARY_REVIEW_MODEL) throw makeErr();
-      return { ...okPayload, model: args.model };
-    });
-    const text = await captureStdout(() => handleReview([], { stdin: "a claim to check" }));
-    assert.deepEqual(calls, [PRIMARY_REVIEW_MODEL, FALLBACK_REVIEW_MODEL]);
-    assert.match(text, /model: gemini-3\.8-flash-high \(fell back from gemini-4-argon-high\)/);
-    assert.match(text, /gemini-4-argon-high failed, so gemini-3\.8-flash-high ran the review instead\. Reason: /);
-    assert.match(text, new RegExp(makeErr().message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(text, /Overall: mixed/);
-
-    calls.length = 0;
-    const json = JSON.parse(await captureStdout(() => handleReview(["--json"], { stdin: "a claim to check" })));
-    assert.equal(json.model, FALLBACK_REVIEW_MODEL);
-    assert.equal(json.requestedModel, PRIMARY_REVIEW_MODEL);
-    assert.equal(json.fellBack, true);
-    assert.equal(json.fallbackReason, makeErr().message);
-    assert.equal(json.parsed.overall, "mixed");
-  });
-}
-
-test("--no-fallback stops after the first failure, and an interrupted run never falls back", async () => {
+test("a failed run reports its error and is not retried on another model", async () => {
   for (const [argv, err] of [
-    [["--no-fallback"], new AgyQuotaError('agy has no quota left for "gemini-4-argon-high": RESOURCE_EXHAUSTED')],
-    [[], new AgyInterruptedError("Stopped by SIGTERM.")]
+    [[], new AgyModelError('agy does not know the model "gemini-4-argon-high".')],
+    [[], new AgyConnectionError("agy --print failed (1): service unavailable")],
+    [[], new AgyAuthError("agy is not signed in")],
+    [[], new AgyQuotaError('agy has no quota left for "gemini-4-argon-high": RESOURCE_EXHAUSTED')],
+    [[], new AgyTimeoutError("agy --print did not finish within 1230000ms.")],
+    [[], new AgyInterruptedError("Stopped by SIGTERM.")],
+    [["--model", "gemini-3.8-flash-high"], new AgyConnectionError("flash service unavailable")]
   ]) {
     const calls = [];
     setRunReviewForTest(async (args) => {
@@ -411,7 +350,7 @@ test("--no-fallback stops after the first failure, and an interrupted run never 
       throw err;
     });
     await assert.rejects(() => handleReview(argv, { stdin: "a claim to check" }), (e) => e === err);
-    assert.deepEqual(calls, [PRIMARY_REVIEW_MODEL], err.name);
+    assert.deepEqual(calls, [argv[1] ?? PRIMARY_REVIEW_MODEL], err.name);
   }
 });
 
@@ -423,17 +362,7 @@ test("the footer counts the web searches agy ran, and --json has them", async ()
   assert.deepEqual(json.searches, { attempted: 3, succeeded: 2 });
 });
 
-test("a sign-in error is not retried on Flash", async () => {
-  const calls = [];
-  setRunReviewForTest(async (args) => {
-    calls.push(args.model);
-    throw new AgyAuthError("agy is not signed in");
-  });
-  await assert.rejects(() => handleReview([], { stdin: "a claim to check" }), AgyAuthError);
-  assert.deepEqual(calls, [PRIMARY_REVIEW_MODEL]);
-});
-
-test("a content-safety block is not retried on Flash, and the error names the block", async () => {
+test("a content-safety block fails the review, and the error names the block", async () => {
   const calls = [];
   setRunReviewForTest(async (args) => {
     calls.push(args.model);
@@ -454,16 +383,6 @@ test("a content-safety block is not retried on Flash, and the error names the bl
   assert.doesNotMatch(out, /sign|version|fallback/i);
 });
 
-test("a hard timeout is not retried on Flash: the budget is gone", async () => {
-  const calls = [];
-  setRunReviewForTest(async (args) => {
-    calls.push(args.model);
-    throw new AgyTimeoutError("agy --print did not finish within 1230000ms.");
-  });
-  await assert.rejects(() => handleReview([], { stdin: "a claim to check" }), AgyTimeoutError);
-  assert.deepEqual(calls, [PRIMARY_REVIEW_MODEL]);
-});
-
 test("a primary run that agy cut off (exit 0, timedOut) is returned, not retried", async () => {
   const calls = [];
   setRunReviewForTest(async (args) => {
@@ -473,58 +392,6 @@ test("a primary run that agy cut off (exit 0, timedOut) is returned, not retried
   const json = JSON.parse(await captureStdout(() => handleReview(["--json"], { stdin: "x" })));
   assert.deepEqual(calls, [PRIMARY_REVIEW_MODEL]);
   assert.equal(json.timedOut, true);
-  assert.equal(json.fellBack, false);
-});
-
-test("the fallback gets only the time left in the budget", async () => {
-  // Move the clock instead of waiting: a real wait lets the test reporter write
-  // while stdout is captured, and its output is lost.
-  const realNow = Date.now;
-  let offsetMs = 0;
-  Date.now = () => realNow() + offsetMs;
-  const seen = [];
-  setRunReviewForTest(async (args) => {
-    seen.push(args.promptTimeoutMs);
-    if (args.model === PRIMARY_REVIEW_MODEL) {
-      offsetMs = 50_000;
-      throw new AgyQuotaError("quota");
-    }
-    return okPayload;
-  });
-  try {
-    await captureStdout(() => handleReview(["--timeout-ms", "200000"], { stdin: "x" }));
-  } finally {
-    Date.now = realNow;
-  }
-  assert.equal(seen[0], 200000);
-  assert.ok(seen[1] <= 150000 && seen[1] > 149000, `fallback got ${seen[1]}`);
-});
-
-test("the fallback is skipped when less than 60 seconds of the budget are left", async () => {
-  const calls = [];
-  setRunReviewForTest(async (args) => {
-    calls.push(args.model);
-    throw new AgyQuotaError("agy has no quota left");
-  });
-  await assert.rejects(
-    () => handleReview(["--timeout-ms", "30000"], { stdin: "x" }),
-    (err) => err instanceof AgyQuotaError && /Skipped the fallback model 'gemini-3\.8-flash-high'/.test(err.message)
-  );
-  assert.deepEqual(calls, [PRIMARY_REVIEW_MODEL]);
-});
-
-test("when both models fail, the error names both causes", async () => {
-  setRunReviewForTest(async (args) => {
-    if (args.model === PRIMARY_REVIEW_MODEL) throw new AgyQuotaError("argon quota used up");
-    throw new AgyConnectionError("flash service unavailable");
-  });
-  await assert.rejects(
-    () => handleReview([], { stdin: "x" }),
-    (err) =>
-      err instanceof AgyConnectionError &&
-      /requested model 'gemini-4-argon-high' failed: argon quota used up/.test(err.message) &&
-      /fallback model 'gemini-3\.8-flash-high' also failed: flash service unavailable/.test(err.message)
-  );
 });
 
 test("empty output with refused tools names the tools instead of a bare empty-output message", async () => {

@@ -1,5 +1,5 @@
 ---
-description: Check that Antigravity CLI works, the review models exist, and show Gemini quota
+description: Check that Antigravity CLI works, the review model exists, and show Gemini quota
 argument-hint: '[--json]'
 disable-model-invocation: false
 allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" *)

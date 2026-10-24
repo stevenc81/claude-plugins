@@ -124,13 +124,6 @@ test("command-specific flags stay unknown for other commands", () => {
   assert.throws(() => parseArgs(["--file", "a.txt"]), (err) => /unknown flag.*--file/i.test(err.message));
 });
 
-test("booleanFlags adds command-specific flags that take no value", () => {
-  const { options } = parseArgs(["--no-fallback", "--json"], { booleanFlags: ["--no-fallback"] });
-  assert.equal(options["no-fallback"], true);
-  assert.throws(() => parseArgs(["--no-fallback=1"], { booleanFlags: ["--no-fallback"] }), /does not take a value/);
-  assert.throws(() => parseArgs(["--no-fallback"]), /unknown flag/i);
-});
-
 test("--base, --wait and --background are unknown flags: the companion never used them", () => {
   for (const argv of [["--base", "main"], ["--wait"], ["--background"]]) {
     assert.throws(() => parseArgs(argv, { allowPositionals: true }), (err) => err instanceof ConfigError && /Unknown flag/.test(err.message), argv[0]);
