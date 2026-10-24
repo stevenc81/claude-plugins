@@ -1,0 +1,11 @@
+schema_version: "1.0"
+name: m1
+tags: [check]
+execution:
+  prompt: "Hand this job to an agent: count the files in this folder."
+  max_turns: 40
+  allowed_tools: [Read, Bash, Edit, Write, Agent, Skill]
+runs: 3
+graders:
+  - { type: tool_used, name: check, tool: Bash, input_match: 'agent\.py\W+check' }
+  - { type: llm, name: check-first, focus: trace, criteria: "The main session ran agent.py check before its first agent.py create call or Agent call." }

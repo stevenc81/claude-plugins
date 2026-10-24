@@ -1,11 +1,12 @@
 {
   "name": "stevenc81",
-  "description": "Claude Code plugins by stevenc81: multi-agent teams, Gemini fact checks, inline pictures and videos, and self-improvement in rounds.",
+  "description": "Claude Code plugins by stevenc81: multi-agent teams, Gemini fact checks, inline pictures and videos, self-improvement in rounds, and specialist agents with their own memory.",
   "owner": { "name": "stevenc81" },
   "plugins": [
     { "name": "orchestrate", "source": "./plugins/orchestrate" },
     { "name": "gemini", "source": "./plugins/gemini" },
     { "name": "show", "source": "./plugins/show" },
-    { "name": "self-improve", "source": "./plugins/self-improve" }
+    { "name": "self-improve", "source": "./plugins/self-improve" },
+    { "name": "specialists", "source": "./plugins/specialists" }
   ]
 }

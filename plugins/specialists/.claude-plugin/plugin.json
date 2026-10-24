@@ -1,0 +1,7 @@
+{
+  "name": "specialists",
+  "description": "Gives Claude Code agents a memory across sessions: one specialist agent per area, each with its own memory folder.",
+  "author": {
+    "name": "stevenc81"
+  }
+}
