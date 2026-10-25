@@ -33,7 +33,7 @@ The conductor follows this section, and pastes it into every teammate prompt.
 ## Team
 
 - Use the skill `orchestrate:conduct` for the team. Conduct decides the effort, the vendor calls and the retries. This skill decides the briefs, the files and where they live, the round steps and the failures. The loop keeps `<temp>` at the end.
-- This skill owns the plan, the watchdog and `<temp>`, as conduct allows a calling skill to. Conduct "Start procedure" steps 1 and 2 run once, in Setup step 9. The team stays the same in every round.
+- This skill owns the plan and `<temp>`, as conduct allows a calling skill to. It uses the conduct watchdog (see "Watchdog"). Conduct "Start procedure" steps 1 and 2 run once, in Setup step 9. The team stays the same in every round.
 - Pick the reviewer once, in the plan: the first model in conduct's "Code review" row whose vendor differs from the builder's, unless the user names the models in Setup. Write the reason in the plan.
 
 Keep the reviewer model, effort and review.md the same in every round, so that the rounds compare. Write any model change in TREND.md and in the reflection.
@@ -52,17 +52,15 @@ The reviewer's prompt has, in order: the text of the fixed copy of review.md, br
 
 Loop lines, for every teammate:
 
-1. Report as brief item 4 says. The conductor saves your report as `<temp>/<job>.md`. Write files only as brief item 5 allows. If you are a Claude teammate, you may also write your progress file.
+1. Report as brief item 4 says. The conductor saves your report as `<temp>/<job>.md`. Write files only as brief item 5 allows.
 2. Mark every claim you did not check.
 3. If the project is a git repo, run only these git commands in it:
    - `git --no-optional-locks status`, `git diff`, `git log`, `git show`, `git ls-files`, `git rev-parse`, `git cat-file`.
-4. If you are a Claude teammate, run `touch "<temp>/<job>.progress"` after each command and each step of your work.
-5. Run no command that may take over 5 minutes. If a check needs longer, skip it and list it under "What I did not check".
-6. Before you report, delete only the files that your commands created inside the scope, such as caches. Keep each file that is part of the fix. Do not delete files in `<temp>`.
+4. Before you report, delete only the files that your commands created inside the scope, such as caches. Keep each file that is part of the fix. Do not delete files in `<temp>`.
 
 Builder lines:
 
-1. Write only inside the scope, your progress file, and the memory folder that brief item 5 allows. For a live target, the scope is the target: change only the objects that the scope exports, only with the write tool, never the export files.
+1. Write only inside the scope and the memory folder that brief item 5 allows. For a live target, the scope is the target: change only the objects that the scope exports, only with the write tool, never the export files.
 2. Run each new or changed command once for real, if it writes only where builder line 1 allows. Else list it as not checked.
 3. Fix the TODO items in order. Report each item that you did not reach.
 4. Never copy the rules of GOAL.md into the scope.
@@ -118,7 +116,7 @@ Then:
 For round n:
 
 1. Build. Run the job `build-<n>`.
-2. Test. checks.sh and each try-out only read the target. Run each of them with the working folder `<temp>/run` and `TMPDIR` set to it. A try-out that runs the project's own tests runs in `<project>`.
+2. Test. checks.sh and each try-out only read the target. Run each of them with the working folder `<temp>/run` and `TMPDIR` set to it. A try-out that runs the project's own tests runs in `<project>`. Run each in the foreground, with a Bash timeout of 600000. If one needs longer, skip it, and list it in `test-<n>.txt` as not checked.
    1. For a live target, export it (see "Live target").
    2. Run the script checks (see "Measure").
    3. Run each try-out that GOAL.md names outside checks.sh. For a live target, see "Live target" item 3. A failed try-out is a test result, not a failure of the loop.
@@ -152,7 +150,7 @@ When a stop rule ends the loop, delete the watchdog. Then show TREND.md, the las
 
 Each step is best effort. If a step fails, write the failure in PROGRESS.md and go on. "Failures" does not apply here.
 
-1. Stop each job that this session started and that still runs. Stop a Codex job as step (2) of the conduct watchdog prompt does, and every other job with TaskStop.
+1. Stop each job that this session started and that still runs. Stop a Codex job as conduct "Stop a Codex job" says, and every other job with TaskStop.
 2. Delete the watchdog.
 3. Tell the user what happened.
 
@@ -164,12 +162,11 @@ In Setup, do the steps of "Stop the loop", then ask the user what to do.
 - Every conduct safety stop ends the loop: do the steps of "Stop the loop".
 - A command fails when its exit code is not 0, unless its rule names other exit codes.
 - A job is done when its report exists. It must also pass conduct "Results and retries" rule 1. A review report must also pass score.py.
-- A job fails when it ends and is not done. A job that delegate "Pick the agent" step 6 does not run has also failed.
+- A job that delegate "Pick the agent" step 6 does not run has failed.
 - To retry a failed job:
   1. If it has a report, rename the report to `<temp>/<job>-failed.md`.
   2. Add the reason that it failed to its prompt, such as the error line from score.py or "no report file".
   3. Run the job again, as the next attempt.
-- Conduct "Results and retries" decides the retries and the model changes.
 - If `build-<n>` fails after its last retry, save `failed` as `<temp>/build-<n>.md`. This is the recovery that conduct "Results and retries" rule 4 allows. The round goes on, and the test and the review check what the builder left.
 
 ## Measure
@@ -201,23 +198,14 @@ Decision rule: the verdict is the one that score.py prints for the issues: progr
 
 ## Watchdog
 
-One CronCreate job watches the whole loop. It runs at the interval in conduct "Watchdog". It judges only teammate jobs, and it resumes the loop.
+The loop uses the watchdog in conduct "Watchdog". Create it once, in Setup.
 
-- Run each conductor command in the foreground, with a Bash timeout of 600000. If a try-out needs longer, skip it, and list it in `test-<n>.txt` as not checked. The one exception is the bridge of delegate "Pick the agent" step 3: its `sleep 30` runs in the background.
-- Create the watchdog once, in Setup.
 - `<temp>/PROGRESS.md` is the state of the loop. Its first lines are `Round: <n>` and `Step: <step>`. `<step>` is step 1, 2, 3 or 4 of "One round". Then it has the jobs in the format of conduct "Watchdog". Update the round and the step at the start of each step.
-- To resume, read the round and the step in PROGRESS.md. If the output of the step exists, do the next step. After step 4, the next step is step 1 of round n+1. Else run the step again from its start. The outputs are: step 1, `build-<n>.md`; step 2, `test-<n>.txt`; step 3, `review-<n>.md`, once the review is done (see "Failures"); step 4, `TODO-<n+1>.md`.
-- Progress files: a Claude teammate touches `<temp>/<job>.progress` (loop line 4). A Codex job writes its `.jsonl`.
-- A running job with a progress file is stalled when that file has not changed for 7 minutes. Run `touch "<temp>/<job>.progress"` just before you start or resume a Claude teammate.
-- The deadline of each job is 60 minutes after its start.
-- The prompt is the text below. Replace each placeholder with its value.
+- To continue the loop, read the round and the step in PROGRESS.md. If the output of the step exists, do the next step. After step 4, the next step is step 1 of round n+1. Else run the step again from its start. The outputs are: step 1, `build-<n>.md`; step 2, `test-<n>.txt`; step 3, `review-<n>.md`, once the review is done (see "Failures"); step 4, `TODO-<n+1>.md`.
+- Add this line to the end of the conduct watchdog prompt. Replace each placeholder with its value.
 
 ```text
-The temp folder is <temp>, and the project folder is <project>. The loop has <N> rounds after Setup. The skill is self-improve:rounds, in <temp>/fixed/SKILL.md.
-1. Do steps (1) to (3) of the conduct watchdog prompt. Treat each stalled job as past its deadline.
-2. Write each change in <temp>/PROGRESS.md. "Failures" in the skill applies to each job that failed.
-3. If no job runs and no `sleep 30` task of the delegate bridge runs, resume the loop from <temp>/PROGRESS.md (see "Watchdog").
-4. If nothing changed, reply with one line.
+The work is the loop of the skill self-improve:rounds, in <temp>/fixed/SKILL.md, with the project folder <project> and <N> rounds after Setup. To continue it, follow its "Watchdog".
 ```
 
 ## Files
