@@ -1,6 +1,6 @@
 # orchestrate
 
-A skill that turns one Claude Code session into the conductor of a small agent team. The team can mix Claude, Codex and Gemini. For each job, the skill picks a model and an effort level from a table of public benchmark results. It also says how to brief each agent and how to check a claim with three vendors.
+A skill that turns one Claude Code session into the conductor of a small agent team. The team can mix Claude, Codex and Gemini. For each job, the skill picks a model and an effort level from a table of public benchmark results. It also says how to brief each agent and how to check a claim with three vendors. When you ask for it, a low-cost mode moves jobs to cheaper settings of the same vendor.
 
 ## Goal
 
