@@ -14,7 +14,7 @@ The model facts, their sources and the date they were checked are in `evidence.m
 If the user's answer would change the work and you cannot find it yourself, ask first. Then follow these steps in order. Before you start a job that is not in the last plan, do steps 1 and 2 again. A retry, or a move to the job's next model, is in the plan.
 
 1. Pick the model and effort for each job. Follow "Pick the model".
-2. Before the first teammate starts, send the plan as a visible message: the temp folder path, then a table with one row per job: the job, its row in "Pick the model", the model and effort, its next model (see "Results and retries" rule 4) or "none", and why. A plan in your reasoning does not count. Do not wait for approval. Exception: if the user asks to review the plan first, wait.
+2. Send the plan as the last message of your turn: the temp folder path, then a table with one row per job: the job, its row in "Pick the model", the model and effort, its next model (see "Results and retries" rule 4) or "none", and why. A plan in your reasoning does not count. Start no teammate until the user approves the plan.
 3. If teammates share context, put it as text in each prompt that needs it. Do not point teammates to a context file: teammates can change files in `<temp>`. For Gemini, a private document, or text from one, goes in `--file` or `--dir` of `/gemini:ask`. It never goes in a prompt or a `/gemini:review` (gemini plugin README, "The tool gate").
 4. Before you start a teammate, create the watchdog in "Watchdog" if none runs. Then start the teammates, with the brief in "Teammate prompts". Give jobs that run at the same time different paths to write.
 

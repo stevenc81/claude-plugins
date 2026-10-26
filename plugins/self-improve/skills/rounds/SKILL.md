@@ -33,7 +33,7 @@ The conductor follows this section, and pastes it into every teammate prompt.
 ## Team
 
 - Use the skill `orchestrate:conduct` for the team. Conduct decides the effort, the vendor calls and the retries. This skill decides the briefs, the files and where they live, the round steps and the failures. The loop keeps `<temp>` at the end.
-- This skill owns the plan and `<temp>`, as conduct allows a calling skill to. It uses the conduct watchdog (see "Watchdog"). Conduct "Start procedure" steps 1 and 2 run once, in Setup step 9. The team stays the same in every round.
+- This skill owns the plan and `<temp>`, as conduct allows a calling skill to. It uses the conduct watchdog (see "Watchdog"). Conduct "Start procedure" steps 1 and 2 run once, in Setup steps 9 and 10. The team stays the same in every round.
 - Pick the reviewer once, in the plan: the first model in conduct's "Code review" row whose vendor differs from the builder's, unless the user names the models in Setup. Write the reason in the plan.
 
 Keep the reviewer model, effort and review.md the same in every round, so that the rounds compare. Write any model change in TREND.md and in the reflection.
@@ -96,8 +96,8 @@ Then:
    - It ends with `exit 0`, after it prints every line. So a FAIL line is a test result.
    - Write each later change of checks.sh in TREND.md. Give a revised check a new ID.
 8. Write `<temp>/TREND.md` with the header from "Measure".
-9. Make the plan with conduct "Start procedure" steps 1 and 2, with one row per job type.
-10. Show GOAL.md, checks.sh, the plan and these notes to the user. Conduct "Start procedure" step 2 says whether to wait for approval.
+9. Make the plan with conduct "Start procedure" step 1, with one row per job type.
+10. Show GOAL.md, checks.sh, the plan and these notes to the user, as conduct "Start procedure" step 2 says.
     - The loop does not check where the builder writes. Builder line 1 is the only limit.
     - The loop keeps no copy of the target, so it has no way back of its own. For a folder, the user's git or backup is the way back. For a live target, the only way back is the user's own history of the target.
     - Nobody else may change a live target while the loop runs. The loop does not see such a change, and the builder can overwrite it.
