@@ -322,7 +322,7 @@ test("setup runs every agy call in one gated temp folder that allows no tool, an
   const decisions = {};
   setBinaryAvailableForTest((cmd, args, opts) => {
     cwds.add(opts?.cwd);
-    return { available: true, detail: "1.4.3" };
+    return { available: true, detail: "1.4.7" };
   });
   const commands = fakeCommands();
   setRunCommandForTest((cmd, args, opts) => {
@@ -370,11 +370,11 @@ test("setup warns, and still runs, when agy is newer than the tested version", a
   setRunReviewForTest(canaryOk);
   setBinaryAvailableForTest(() => ({ available: true, detail: "1.5.0" }));
   const { out, exitCode } = await runSetup();
-  assert.match(out, /Warning: agy 1\.5\.0 is newer than 1\.4\.5, the version this plugin was tested on\. Run `node ".*smoke-agy\.mjs"`/);
+  assert.match(out, /Warning: agy 1\.5\.0 is newer than 1\.4\.7, the version this plugin was tested on\. Run `node ".*smoke-agy\.mjs"`/);
   assert.match(out, /Ready\. Try/);
   assert.notEqual(exitCode, 1);
   const json = JSON.parse((await runSetup(["--json"])).out);
-  assert.match(json.versionWarning, /newer than 1\.4\.5/);
+  assert.match(json.versionWarning, /newer than 1\.4\.7/);
   assert.equal(json.promptOk, true);
   const smoke = json.versionWarning.match(/node "(.*)"/)[1];
   assert.ok(fs.existsSync(smoke), "the warning names a smoke test that exists");
@@ -405,18 +405,18 @@ test("setup fails before any agy call on an agy older than the hook minimum or w
   setRunCommandForTest(() => {
     throw new Error("should not be called");
   });
-  for (const detail of ["1.4.2", "agy ok"]) {
+  for (const detail of ["1.4.6", "agy ok"]) {
     setBinaryAvailableForTest(() => ({ available: true, detail }));
     const { out, exitCode } = await runSetup();
     assert.equal(exitCode, 1, detail);
-    assert.match(out, /needs agy 1\.4\.3 or later.*agy update/, detail);
+    assert.match(out, /needs agy 1\.4\.7 or later.*agy update/, detail);
     const json = JSON.parse((await runSetup(["--json"])).out);
-    assert.match(json.nextSteps[0], /needs agy 1\.4\.3 or later/, detail);
+    assert.match(json.nextSteps[0], /needs agy 1\.4\.7 or later/, detail);
   }
 });
 
 test("setup --json has promptDetail and nextSteps when the canary reply is wrong", async () => {
-  setBinaryAvailableForTest(() => ({ available: true, detail: "1.4.3" }));
+  setBinaryAvailableForTest(() => ({ available: true, detail: "1.4.7" }));
   setRunReviewForTest(async (args) => ({ ...(await canaryOk(args)), text: "hello", response: "hello" }));
   const { out, exitCode } = await runSetup(["--json"]);
   assert.equal(exitCode, 1);
@@ -432,7 +432,7 @@ test("setup --json prints JSON also when agy is missing or the canary fails", as
   assert.equal(exitCode, 1);
   assert.equal(JSON.parse(out).agy.available, false);
 
-  setBinaryAvailableForTest(() => ({ available: true, detail: "1.4.3" }));
+  setBinaryAvailableForTest(() => ({ available: true, detail: "1.4.7" }));
   setRunReviewForTest(async () => {
     throw new AgyAuthError("agy is not signed in: unauthorized");
   });

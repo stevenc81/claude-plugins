@@ -57,7 +57,7 @@ function reply(fields = {}) {
 const useAgyVersion = (detail) => setBinaryAvailableForTest(() => ({ available: true, detail }));
 beforeEach(() => {
   setRunReviewForTest(null);
-  useAgyVersion("1.4.3");
+  useAgyVersion("1.4.7");
 });
 afterEach(() => {
   setRunReviewForTest(null);
@@ -664,21 +664,21 @@ test("ask --dir and --file work together", async () => {
   }
 });
 
-test("ask, with or without --dir, fails before the run on an agy older than 1.4.3 or with no version", async () => {
+test("ask, with or without --dir, fails before the run on an agy older than 1.4.7 or with no version", async () => {
   setRunReviewForTest(async () => {
     throw new Error("should not be called");
   });
   for (const argv of [[], ["--dir", os.tmpdir()]]) {
-    for (const detail of ["1.4.2", "1.3.6", "agy not found on PATH"]) {
+    for (const detail of ["1.4.6", "1.3.6", "agy not found on PATH"]) {
       useAgyVersion(detail);
       await assert.rejects(
         () => handleAsk(argv, { stdin: "hi" }),
-        (err) => err instanceof ConfigError && /needs agy 1\.4\.3 or later/.test(err.message) && /agy update/.test(err.suggestion),
+        (err) => err instanceof ConfigError && /needs agy 1\.4\.7 or later/.test(err.message) && /agy update/.test(err.suggestion),
         detail
       );
     }
   }
-  for (const detail of ["1.4.3", "1.5.0", "2.0.0"]) {
+  for (const detail of ["1.4.7", "1.5.0", "2.0.0"]) {
     useAgyVersion(detail);
     setRunReviewForTest(async () => reply());
     await captureStdout(() => handleAsk(["--dir", os.tmpdir()], { stdin: "hi" }));

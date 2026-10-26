@@ -94,14 +94,15 @@ export function toolRule({ pages = true, image = false } = {}) {
     `Never run shell commands, write files or start ${image ? "any other subagent" : "subagents"}: ${NO_PERMISSION}`
   ].join(" ");
 }
-// The oldest agy on which the hook (matcher "*" and its path checks) was
-// tested. Every run needs at least this version, because an older agy could
-// ignore the hook without a warning.
-export const MIN_HOOK_AGY_VERSION = [1, 4, 3];
+// The oldest agy that every run needs. The hook (matcher "*" and its path
+// checks) was tested from 1.4.3, but before 1.4.7 agy did not load hooks when
+// the user signs in with Application Default Credentials (AGY_ADC_AUTH), so an
+// older agy could run with no gate and no warning.
+export const MIN_HOOK_AGY_VERSION = [1, 4, 7];
 // The newest agy that this plugin was tested on, with tests/smoke-agy.mjs.
 // /gemini:setup warns on a newer one, so that someone runs the smoke test and
 // then raises this number.
-export const TESTED_AGY_VERSION = [1, 4, 5];
+export const TESTED_AGY_VERSION = [1, 4, 7];
 const SMOKE_TEST = fileURLToPath(new URL("../tests/smoke-agy.mjs", import.meta.url));
 
 // -1, 0 or 1 as the x.y.z in `version` is below, at or above `v`; null when

@@ -1,6 +1,6 @@
 ---
 description: Fact-check conversation content via Antigravity CLI with live web grounding
-argument-hint: '[--model <id>] [focus text]'
+argument-hint: '[--model <id>] [--json] [focus text]'
 disable-model-invocation: false
 allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" *)
 ---

@@ -15,7 +15,7 @@ If the user's answer would change the work and you cannot find it yourself, ask 
 
 1. Pick the model and effort for each job. Follow "Pick the model".
 2. Before the first teammate starts, send the plan as a visible message: the temp folder path, then a table with one row per job: the job, its row in "Pick the model", the model and effort, its next model (see "Results and retries" rule 4) or "none", and why. A plan in your reasoning does not count. Do not wait for approval. Exception: if the user asks to review the plan first, wait.
-3. If teammates share context, put it as text in each prompt that needs it. Do not point teammates to a context file: teammates can change files in `<temp>`. For Gemini, a private document goes in `--file` or `--dir`, never in the prompt (gemini plugin README, "The tool gate").
+3. If teammates share context, put it as text in each prompt that needs it. Do not point teammates to a context file: teammates can change files in `<temp>`. For Gemini, a private document, or text from one, goes in `--file` or `--dir` of `/gemini:ask`. It never goes in a prompt or a `/gemini:review` (gemini plugin README, "The tool gate").
 4. Before you start a teammate, create the watchdog in "Watchdog" if none runs. Then start the teammates, with the brief in "Teammate prompts". Give jobs that run at the same time different paths to write.
 
 ## Standing rules
@@ -53,7 +53,7 @@ If the user's answer would change the work and you cannot find it yourself, ask 
 | Bulk simple work: extraction, classification, short summaries | Claude Haiku 5.5, low. Use medium for several steps. | Gemini 3.8 Flash, low. Use medium for several steps. | No clear winner. Flash scores higher at each effort level. Haiku has the Claude Code tools. When the output must be JSON, pass a schema: see the Codex and Gemini call lines. | Low |
 | Speed-critical short answers | Claude Sonnet 5.5, low | Gemini 3.8 Flash, low | Sonnet low has the fastest first token in AA's lab tests. On OpenRouter traffic, Haiku answers first. Flash and Haiku produce text fastest. | Medium |
 
-Images and screenshots: Opus, 6.1 Sol, 3.8 Flash, Fable and Astra tie on Vision Arena. Sonnet scores lower. Argon is not listed there. Use the model that already does the job. For object detection and OCR, Argon leads Roboflow's evals. Only Gemini makes images in this setup (`/gemini:ask --image-out`).
+Images and screenshots: Opus, 6.1 Sol, 3.8 Flash, Fable and Astra tie on Vision Arena. Sonnet scores lower. Argon is not listed there. Use the model that already does the job. For object detection and OCR, Argon leads Roboflow's evals. Gemini (`/gemini:ask --image-out`) and Codex (its image tool, with `-s workspace-write`) make images.
 
 PDFs and documents: Claude reads PDFs. Gemini also reads charts that exist only as pixels. Codex needs the text, or page images passed with `-i`. Pick by the job.
 
@@ -118,28 +118,27 @@ A new teammate does not see this conversation. Start every teammate prompt with 
   - For web search, put `--search` before `exec`: `codex --search exec ...`. `codex exec --search` fails.
   - Pass images with `-i '<file>'`.
   - If a model name fails, check `~/.codex/models_cache.json`.
-- Do not use the `codex:codex-rescue` agent or the `/codex:*` commands for teammates. The agent cannot set max or ultra, rewrites the prompt, and resumes only "the last" task. Only the user can run `/codex:review` and `/codex:adversarial-review`.
-- Gemini: always pass `--model`, with the effort from the plan. The IDs are `gemini-4-argon-<effort>` and `gemini-3.8-flash-<effort>`, with low, medium or high. Without `--model`, `/gemini:ask` uses `gemini-3.8-flash-medium`, and an older plugin version's `/gemini:review` can use Flash.
+- Do not use the `codex:codex-rescue` agent or the `/codex:*` commands for teammates. The agent cannot set max or ultra, may rewrite the prompt, and resumes only "the last" task. Only the user can run `/codex:review` and `/codex:adversarial-review`.
+- Gemini: always pass `--model`, with the effort from the plan. The IDs are `gemini-4-argon-<effort>` and `gemini-3.8-flash-<effort>`, with low, medium or high.
   - Run the `/gemini:*` commands with the Skill tool (`gemini:ask`, `gemini:review`). Item 6 in "Teammate prompts" says which ones a teammate runs.
-  - Fact check: `/gemini:review --model gemini-4-argon-<effort> [focus]`. Give the text to check in the same message. The review checks exactly that text.
-  - Other jobs: write the prompt to `<temp>/<job>/prompt.md`. Then run `/gemini:ask --background --model <id> --prompt-file <temp>/<job>/prompt.md`. `--background` is a flag of the slash command only, not of the companion script. A teammate leaves it out.
-  - For a follow-up, pass `--resume <conversation-id>`, from the `[conversation]` line of the last answer, and pass each `--file` and `--dir` again. A resumed ask cannot open web pages.
-  - The gemini plugin's README holds the other rules: files and folders (`--file`, `--dir`), media formats and sizes, JSON answers (`--schema`), images (`--image-out`), the prompt cap, the review cap, and how to let Gemini open web pages.
+  - Fact check: `/gemini:review --model gemini-4-argon-<effort> [focus]`. Give the text to check in the same message. For text from a private document, follow step 3 of "Start procedure".
+  - Other jobs: write the prompt to `<temp>/<job>/prompt.md`. Then run `/gemini:ask --background --model <id> --prompt-file <temp>/<job>/prompt.md`.
+  - The gemini plugin's README holds the other rules: files and folders (`--file`, `--dir`), follow-ups (`--resume`), media formats and sizes, JSON answers (`--schema`), images (`--image-out`), the prompt cap, the review cap, and how to let Gemini open web pages.
 
 ### Codex, a follow-up
 
-Take the `thread_id` from the first line of `<temp>/<job>/out.jsonl`. From the same `<project>` folder, run in the same way, with the same `pgid` line, `tee '<temp>/<job>/prompt-<n>.md' <<'<end>' | codex exec resume <thread_id> --skip-git-repo-check --json -m <model> -c model_reasoning_effort=<effort> <access> -o '<temp>/<job>/out-<n>.md' - > '<temp>/<job>/out-<n>.jsonl'`. `<n>` is the lowest number from 2 that has no `<temp>/<job>/out-<n>.*` file, so each turn writes new files.
+Take the `thread_id` from the `thread.started` event in `<temp>/<job>/out.jsonl`. Run in the same way, with the same `pgid` line, `tee '<temp>/<job>/prompt-<n>.md' <<'<end>' | codex exec <access> resume <thread_id> --skip-git-repo-check --json -m <model> -c model_reasoning_effort=<effort> -o '<temp>/<job>/out-<n>.md' - > '<temp>/<job>/out-<n>.jsonl'`. `<n>` is the lowest number from 2 that has no `<temp>/<job>/out-<n>.*` file, so each turn writes new files.
 
-- `<access>` is the access of the first turn, again: `-c sandbox_mode=<sandbox>` with its network flag, or the whole profile from "Untrusted input on Codex".
-- `resume` has no `-C`, `-s` or `--add-dir`. It runs in the current folder. Without `<access>`, it falls back to read-only. If the first turn used `--add-dir`, start a new call instead, with the earlier answer as data: I have not checked that `resume` keeps the added folder.
-- If the first turn used `--output-schema` or `-i`, pass them again. If it used `--search`, write `codex --search exec resume ...`.
+- `<access>` is the access flags of the first turn, again: `-C '<project>'`, then either `-s <sandbox>` with any network flag and `--add-dir`, or the whole profile from "Untrusted input on Codex". The flags go between `exec` and `resume`. The profile and the network flag were not tested with resume in this place (evidence.md, "Codex CLI and plugin").
+- If the first turn used `--output-schema` or `-i`, pass them again. If it used `--search`, write `codex --search exec <access> resume ...`.
 
 ### Untrusted input on Codex
 
-A job that uses `--search` or reads untrusted input can read every file on the disk and could send it out. For such a job, replace `-s <sandbox>` with a permission profile that blocks most reads outside what the job needs: `-c 'permissions.job.filesystem={":minimal"="read", "/opt/homebrew"="read", "<temp>"="none", "<input>"="read"}' -c default_permissions=job`. Write one `"<input>"="read"` entry for each file or folder that the brief gives the job, and none for a web-only job.
+A job that uses `--search` or reads untrusted input can read every file on the disk and could send it out. For such a job, replace `-s <sandbox>` with a permission profile that blocks most reads outside what the job needs: `-c 'permissions.job.filesystem={":minimal"="read", "/opt/homebrew"="read", "<temp>"="deny", "<input>"="read"}' -c default_permissions=job`. Write one `"<input>"="read"` entry for each file or folder that the brief gives the job, and none for a web-only job.
 
 - The paths are TOML strings: write each `\` in a path as `\\` and each `"` as `\"`.
 - `-s` and `default_permissions` cannot be combined.
+- A `sandbox_mode` line in any loaded Codex config file overrides the profile (evidence.md, "Codex CLI and plugin"). Before the job, run this check, with the job's `-C` folder as `<dir>`. It reads the user, system and project config files, from `<dir>` up to `/`, and skips comments: `sh -c 'd=$1; set --; while :; do set -- "$@" "$d/.codex/config.toml"; [ "$d" = / ] && break; d=$(dirname "$d"); done; for f in "${CODEX_HOME:-$HOME/.codex}/config.toml" /etc/codex/config.toml "$@"; do [ -f "$f" ] && grep -Hn "^[[:space:]]*sandbox_mode" "$f"; done; true' sh '<dir>'`. It always exits 0. If it prints any line, also an error, do not start the job. It is a safety stop (see "Safety stops").
 - The profile blocks `~` and `$TMPDIR`. Python and the other Homebrew tools run, because of the `/opt/homebrew` entry.
 - The profile does not block every folder: in tests, other folders under `/private/tmp` stayed readable and writable (evidence.md, "Sandbox reads").
 - The `<temp>` entry stops reads and writes there, but an input inside `<temp>` stays readable. The CLI, not the sandbox, still writes the `-o` answer and the JSONL.
@@ -150,11 +149,11 @@ A job that uses `--search` or reads untrusted input can read every file on the d
 2. Run `ps -o pgid=,lstart= -p <pgid>`. If it does not print the same line as the file, the job has ended. Then never signal that group: its number may belong to another process now.
 3. List the job's processes: those in its group and all their children (`pgrep -P <pid>`, repeated). Codex runs each command in a group of its own.
 4. Run `kill -- -<g>` for each of their groups (`ps -o pgid= -p <pid>`) that is neither your shell's nor its parent's (`ps -o pgid= -p $$ -p $PPID`).
-5. Check each listed PID with `kill -0 <pid>`. If one lives, run `kill -9 -- -<g>` on its group, and check again. A group you did not kill counts as still alive. If one still lives, it is a safety stop (see "Safety stops").
+5. Check each listed PID with `kill -0 <pid>`, once a second for up to 5 seconds. If one lives, run `kill -9 -- -<g>` on its group, and check again in the same way. A group you did not kill counts as still alive. If one still lives, it is a safety stop (see "Safety stops").
 
 ## Results and retries
 
-1. Check each result. A job is done only when its output exists, is not empty, and meets the "done" of its brief. Codex: the call exits 0, and the `-o` file of the attempt is not empty. With `--output-schema`, the file must also parse as JSON with the required keys: Codex does not guarantee the schema. Gemini: exit 0 and a non-empty answer (the text, the JSON with `--schema`, the `[image]` lines with `--image-out`, or the findings of a review). It is not done if the header of a review says `degraded` or `truncated`, or if an ask has a `[note]` line that says the answer was cut off or compacted, unless the job accepts a partial answer. Claude: if a result ends with `[result truncated`, ask the teammate to send the full report as item 4 in "Teammate prompts" says. A job that ended and is not done has failed.
+1. Check each result. A job is done only when its output exists, is not empty, and meets the "done" of its brief. Codex: the call exits 0, and the `-o` file of the attempt is not empty. With `--output-schema`, the file must also parse as JSON and fit the schema: Codex does not guarantee it. Gemini: exit 0 and a non-empty answer (the text, the JSON with `--schema`, the `[image]` lines with `--image-out`, or the findings of a review). It is not done if the header of a review says `degraded` or `truncated`, or if an ask has a `[note]` line that says the answer was cut off or compacted, unless the job accepts a partial answer. Claude: if a result ends with `[result truncated`, ask the teammate to send the full report as item 4 in "Teammate prompts" says. A job that ended and is not done has failed.
 2. If a vendor stops a job on a usage limit, move the job to its next model at once. A `/gemini:*` command that fails with "agy has no quota left" has stopped on a usage limit.
 3. If a job fails for another reason, such as a crash, a timeout, bad output or a failed check, retry it once. If the retry also fails, move the job to its next model. Do not retry on the next model.
 4. A job's next model is the one in its plan row. Pick it from the job's row in "Pick the model": the model that the job does not use, unless its vendor did the work that the job checks ("Pick the model" rule 3). If a job must move to its next model and has none, or the next model also fails, it is a safety stop (see "Safety stops"), unless a calling skill names a recovery. Before a retry or a move, if the job changes files or other systems, check what the failed attempt changed, and say it in the new brief.
@@ -165,6 +164,7 @@ These are the only cases where a job stops with no recovery. In every other case
 
 1. A job or a command of the conductor fails, and no rule names a recovery for it. Example: "Results and retries" rule 4.
 2. A process of a Codex job is still alive after `kill -9`, in "Stop a Codex job".
+3. A Codex config file sets `sandbox_mode` before a job that needs the profile, in "Untrusted input on Codex".
 
 In a safety stop, stop the failed job, and do not retry it. Jobs that do not need its result go on, unless a calling skill ends all the work. Tell the user which job stopped, and why.
 

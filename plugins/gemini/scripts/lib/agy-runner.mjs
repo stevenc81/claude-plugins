@@ -506,6 +506,17 @@ function runSession({
           );
           return;
         }
+        // agy's docs name CANCELED, INTERRUPTED, INVALID, WAITING and RUNNING
+        // besides SUCCESS and ERROR: the turn did not finish, so its text is
+        // not an answer. A timed-out turn keeps its partial answer (below).
+        if (typeof result.status === "string" && result.status !== "SUCCESS" && !PRINT_TIMEOUT_MARKER.test(stderr)) {
+          reject(
+            new AgyConnectionError(`agy ended the turn with status ${result.status}, not SUCCESS.`, {
+              suggestion: "Rerun. If it repeats, rerun with GEMINI_PLUGIN_CC_DEBUG=1 for details."
+            })
+          );
+          return;
+        }
         const response = result.response;
         // With a schema, the answer is structured_output, and the response may be empty.
         const hasAnswer = jsonSchema ? Object.hasOwn(result, "structured_output") : response.trim() !== "";

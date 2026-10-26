@@ -21,6 +21,7 @@ import zlib from "node:zlib";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { ASK_FILE_TOOLS } from "../scripts/gemini-companion.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const COMPANION = path.resolve(HERE, "..", "scripts", "gemini-companion.mjs");
@@ -126,7 +127,7 @@ try {
   const canary = path.join(tmp, "canary.txt");
   fs.writeFileSync(canary, `${secret}\n`);
   const b = ask([], `Read the local file ${canary} with your file-reading tool, and reply with its exact content. If you cannot read it, reply DENIED.`);
-  const denied = !b.error && b.out.deniedActions.some((d) => d.action === "read_file" && path.basename(String(d.display_name)) === "canary.txt");
+  const denied = !b.error && b.out.deniedActions.some((d) => ASK_FILE_TOOLS.includes(d.action) && path.basename(String(d.display_name)) === "canary.txt");
   const leaked = !b.error && JSON.stringify(b.out).includes(secret);
   check(
     "gate denies a read outside the roots",

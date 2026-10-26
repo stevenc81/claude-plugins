@@ -72,7 +72,7 @@ const okPayload = {
 
 beforeEach(() => {
   setRunReviewForTest(null);
-  setBinaryAvailableForTest(() => ({ available: true, detail: "1.4.3" }));
+  setBinaryAvailableForTest(() => ({ available: true, detail: "1.4.7" }));
 });
 afterEach(() => {
   setRunReviewForTest(null);
@@ -83,11 +83,11 @@ test("review fails before the run on an agy older than the hook minimum or with 
   setRunReviewForTest(async () => {
     throw new Error("should not be called");
   });
-  for (const detail of ["1.4.2", "agy not found on PATH"]) {
+  for (const detail of ["1.4.6", "agy not found on PATH"]) {
     setBinaryAvailableForTest(() => ({ available: true, detail }));
     await assert.rejects(
       () => handleReview([], { stdin: "Claim." }),
-      (err) => err instanceof ConfigError && /needs agy 1\.4\.3 or later/.test(err.message),
+      (err) => err instanceof ConfigError && /needs agy 1\.4\.7 or later/.test(err.message),
       detail
     );
   }

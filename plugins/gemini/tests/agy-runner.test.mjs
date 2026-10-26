@@ -953,3 +953,15 @@ test("with a schema, a part that is not taken in stops the run before the prompt
     (err) => err instanceof ConfigError && /compacted the conversation/.test(err.message)
   );
 });
+
+test("a final turn with a status other than SUCCESS fails, unless it timed out", async () => {
+  for (const status of ["CANCELED", "INTERRUPTED", "INVALID", "WAITING", "RUNNING"]) {
+    const { proc } = makeFakeProc({ stdoutChunks: [agyStream({ status, response: "partial" })] });
+    await assert.rejects(() => runReview({ prompt: "x", spawnFn: () => proc }), (err) => err instanceof AgyConnectionError && err.message.includes(`status ${status}`), status);
+  }
+  const timeout = "[agy] print timeout after 4s with turn in progress; returning partial output\n";
+  const cut = makeFakeProc({ stdoutChunks: [agyStream({ status: "CANCELED", response: "partial" })], stderrChunks: [timeout] });
+  const result = await runReview({ prompt: "x", promptTimeoutMs: 4000, spawnFn: () => cut.proc });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.text, "partial");
+});
