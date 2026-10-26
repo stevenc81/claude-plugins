@@ -7,7 +7,7 @@ description: Use when the user types /orchestrate:conduct, asks for an agent tea
 
 Standing rules for multi-agent work. The conductor is this session: it plans the work, starts the teammates and checks their results. A teammate is any agent the conductor starts, on any vendor: Claude, Codex or Gemini. A calling skill is a skill that uses this skill, such as `self-improve:rounds`. Where the rules of a calling skill differ from this skill, the calling skill wins.
 
-The model facts, their sources and the date they were checked are in `evidence.md` in this folder. If that date is more than 2 months old, or you see a model that the table does not name, tell the user once that the table may be out of date, and go on with it. Refresh the table only when the user asks: see "Refresh the evidence".
+The model facts, their sources, the reason for each choice in the table and the date they were checked are in `evidence.md` in this folder. If that date is more than 2 months old, or you see a model that the table does not name, tell the user once that the table may be out of date, and go on with it. Refresh the table only when the user asks: see "Refresh the evidence".
 
 ## Start procedure
 
@@ -27,44 +27,37 @@ If the user's answer would change the work and you cannot find it yourself, ask 
 ## Pick the model
 
 1. Find the row that matches the job. Use the first choice, at the effort in the table.
-2. Pick any other model or effort when the job needs it. Examples: the job mixes two rows, or a teammate already holds the context. Write the reason in the plan.
+2. Pick another model from the table, or another effort, when the job needs it. Examples: the job mixes two rows, or a teammate already holds the context. Write the reason in the plan.
 3. For an independent check or a critic, use the first model in the check's own row (such as "Code review") whose vendor differs from the vendor that did the work.
 4. Split the work by strength, not evenly.
 5. If no row fits, use the nearest row.
 6. If a row says "no clear winner", pick by tools. Claude teammates have the Claude Code tools, but a specialist has no MCP tools. Codex reads any file and runs code. Gemini searches the web and reads the files and folders you pass to it, but one ask cannot both open web pages and read files (gemini plugin README, "The tool gate"). Gemini runs no code or commands.
 7. If a job fails, follow "Results and retries".
 
-| Job | First choice | Second choice | Why | Confidence |
-|---|---|---|---|---|
-| Hard coding, large refactor | Claude Opus 5.5, xhigh | Codex gpt-6.1-sol, xhigh. For multi-hour runs: gpt-6-astra, xhigh. | Opus is first on Terminal-Bench (tbench.ai and Vals), Agent Arena Code and the Vals long-task tests. Sonnet ties it on tbench.ai and Agent Arena Code, and beats it on AA's Terminal-Bench run. Sol and Astra score lower on each test, but their intervals overlap Sonnet's. | Medium |
-| Routine coding with a clear scope | Claude Sonnet 5.5, medium | Codex gpt-6.1-sol, medium | Sonnet leads Vals Code Migration. Sonnet has the fastest first token. | Medium |
-| Shell, infra and deploy work | Claude Opus 5.5, xhigh | Codex gpt-6-astra, xhigh | Opus is first on Terminal-Bench (tbench.ai and Vals) and on Agent Arena bash reliability. gpt-6.1-sol and Argon score lowest on bash reliability, so the check uses Astra. | Medium |
-| Debugging, root cause | Claude Sonnet 5.5, max. For a job over 30 minutes: Claude Opus 5.5, xhigh. | Codex gpt-6.1-sol, xhigh | Two tests run Sonnet 5.5 and Opus 5.5 side by side (Bug Hunt Bench, The New Stack). Both have Sonnet first at max. At xhigh, they tie on Bug Hunt. In The New Stack's agent loop, Opus was faster, and Sonnet hit an output cap. All these tests are small and noisy. | Low |
-| Code review | Claude Opus 5.5, high | Codex gpt-6.1-sol, high | ReviewBench scores review products, not bare models, and the harness moves a score more than the model. The best Claude entry runs on Opus 5.5. The best GPT entry is far behind, but it runs on an older GPT model. No GPT-6 or Gemini 4 entry is listed. | Low |
-| Front-end and web UI | Claude Opus 5.5, max | Codex gpt-6-astra, max | Opus is #1 on WebDev Arena with a clear gap. Astra (max) and Sonnet (xhigh) tie behind it. Argon is far behind. | High |
-| Math | Codex gpt-6.1-sol, max | Claude Opus 5.5, high | 6.1 Sol leads Opus on MathArena. On Epoch FrontierMath Tiers 1–3 they tie. Argon is far behind on MathArena. Opus leads one small contest, ArXivLean. | Low |
-| Scientific or data research that runs code | Codex gpt-6-astra, xhigh | Claude Opus 5.5, high | Astra leads Vals Terminal-Bench Science and the Vals Science Index. On HLE, Scale has Astra and Opus tied, and AA has Opus first. DrugDiscoveryBench has no Claude 5.5 row. | Medium |
-| Analysis, reports, documents | Claude Opus 5.5, high | Gemini 4 Argon, high | Opus leads GDPval-AA. Sonnet, Opus and Argon tie on the Vals Index. | Medium |
-| Judgment, planning, critique | Claude Opus 5.5, high | Gemini 4 Argon, high | Argon and Opus tie on Arena Hard Prompts. Opus leads Agent Arena steerability. 6.1 Sol is behind both of them on both tests. | Low |
-| Fact check of claims | Gemini 4 Argon, high, with `/gemini:review` | Codex gpt-6-astra, high, with `codex --search exec` and the "Untrusted input on Codex" profile | Argon has the lowest hallucination rate when it answers from memory (AA-Omniscience), mostly because it declines to answer. It ties for first on SimpleQA Verified. On tests that put the facts in the prompt (Vectara, FACTS Grounding), GPT-6 models lead Argon. No test measures fact checks with live search. | Low |
-| Web research across many sources | Claude Fable 5.1, high | Codex gpt-5.6-sol, xhigh, with `--search` | gpt-5.6-sol is #1 on Arena Search. Of the Claude models in this table, Fable ranks highest there, at #5. Only Claude teammates have a browser here, for pages that need JavaScript. | Low |
-| Long documents or code over 100k tokens | Claude Opus 5.5, high | Gemini 4 Argon, high, with `--prompt-file` for a document that is not private, up to the plugin's cap | `agy` compacts Argon's conversation far below its 1M window, and users report no working setting to change that. So most of Argon's lead at 256k to 1M (a vendor claim) is out of reach. At about 100k tokens, AA-LCR has no clear winner. Claude has a 1M context. Split larger inputs. | Low |
-| Video or audio input | Gemini 3.8 Flash, medium. For long or dense video: Gemini 4 Argon, high. | None | Only Gemini takes video and audio in this setup. Audio has one independent test, Scale AudioMultiChallenge, at high, where Flash and Argon tie. It has no score at medium. Video has only the vendor's test (LVBench). For formats and limits, see "Media" in the gemini plugin README. | Medium for video, low for audio |
-| Bulk simple work: extraction, classification, short summaries | Claude Haiku 5.5, low. Use medium for several steps. | Gemini 3.8 Flash, low. Use medium for several steps. | No clear winner. Flash scores higher at each effort level. Haiku has the Claude Code tools. When the output must be JSON, pass a schema: see the Codex and Gemini call lines. | Low |
-| Speed-critical short answers | Claude Sonnet 5.5, low | Gemini 3.8 Flash, low | Sonnet low has the fastest first token in AA's lab tests. On OpenRouter traffic, Haiku answers first. Flash and Haiku produce text fastest. | Medium |
+| Job | First choice | Second choice | Confidence |
+|---|---|---|---|
+| Hard coding, large refactor | Claude Opus 5.5, xhigh | Codex gpt-6.1-sol, xhigh | Medium |
+| Routine coding with a clear scope | Claude Sonnet 5.5, medium | Codex gpt-6.1-sol, medium | Medium |
+| Shell, infra and deploy work | Claude Opus 5.5, xhigh | Codex gpt-6-astra, xhigh | Low |
+| Debugging, root cause | Claude Sonnet 5.5, max | Codex gpt-6.1-sol, xhigh | Low |
+| Code review | Claude Opus 5.5, high | Codex gpt-6.1-sol, high | Low |
+| Front-end and web UI | Claude Opus 5.5, max | Codex gpt-6-astra, max | High |
+| Math | Codex gpt-6.1-sol, max | Claude Opus 5.5, high | Low |
+| Scientific or data research that runs code | Codex gpt-6-astra, xhigh | Claude Opus 5.5, high | Medium |
+| Analysis, reports, documents | Claude Opus 5.5, high | Gemini 4 Argon, high | Medium |
+| Judgment, planning, critique | Claude Opus 5.5, high | Gemini 4 Argon, high | Low |
+| Fact check of claims | Gemini 4 Argon, high | Codex gpt-6-astra, high, with `--search` | Low |
+| Web research across many sources | Claude Fable 5.1, high | Codex gpt-5.6-sol, xhigh, with `--search` | Low |
+| Long documents or code over 100k tokens | Claude Opus 5.5, high | Gemini 4 Argon, high | Low |
+| Video or audio input | Gemini 3.8 Flash, medium. For long or dense video: Gemini 4 Argon, high. | None | Medium for video, low for audio |
+| Bulk simple work: extraction, classification, short summaries | Claude Haiku 5.5, low. Use medium for several steps. | Gemini 3.8 Flash, low. Use medium for several steps. | Low: no clear winner |
+| Speed-critical short answers | Claude Sonnet 5.5, low | Gemini 3.8 Flash, low | Medium |
 
-Images and screenshots: Opus, 6.1 Sol, 3.8 Flash, Fable and Astra tie on Vision Arena. Sonnet scores lower. Argon is not listed there. Use the model that already does the job. For object detection and OCR, Argon leads Roboflow's evals. Gemini (`/gemini:ask --image-out`) and Codex (its image tool, with `-s workspace-write`) make images.
+Images and screenshots: use the model that already does the job. For object detection and OCR, use Gemini 4 Argon. Gemini (`/gemini:ask --image-out`) and Codex (its image tool, with `-s workspace-write`) make images.
 
 PDFs and documents: Claude reads PDFs. Gemini also reads charts that exist only as pixels. Codex needs the text, or page images passed with `-i`. Pick by the job.
 
-Weak spots:
-
-- Claude Fable 5.1: Opus 5.5 ties or beats it on most independent tests. Opus at medium matches Fable at high on the AA index. In one study (Snorkel), most of Fable's failures were early stops. Use Fable for web research. Fable has the highest hallucination rate of the top models when it answers from memory.
-- Claude Haiku 5.5 and Gemini 3.8 Flash: weak at long, multi-step agent work. Give them short, one-shot jobs.
-- Codex gpt-6-luna: weak at agent work and fact recall. Haiku and Flash beat it on bulk work.
-- Codex gpt-6-sol and the gpt-5.6 models: gpt-6.1-sol beats them on almost every quality test. The exceptions are gpt-5.6-sol for web search, and gpt-6-sol on tests that put the facts in the prompt: it is first on FACTS Grounding and Vectara, where 6.1 Sol is behind or not listed.
-- Codex gpt-5.6-terra, gpt-reserve and codex-auto-review: do not use. gpt-6.1-sol beats Terra on every quality test that lists both. gpt-reserve is a quota bucket for gpt-5.6-luna. codex-auto-review is Codex's approval reviewer, not a task model.
-- Antigravity also lists Claude and gpt-oss models. Do not use them there. Run Claude work as Claude Code teammates, which have the full tools.
+Use only the models in this section, each through its own vendor's tool (see "How to call each vendor"). Give Claude Haiku 5.5 and Gemini 3.8 Flash only short, one-shot jobs.
 
 ## Effort
 
@@ -138,7 +131,7 @@ A job that uses `--search` or reads untrusted input can read every file on the d
 
 - The paths are TOML strings: write each `\` in a path as `\\` and each `"` as `\"`.
 - `-s` and `default_permissions` cannot be combined.
-- A `sandbox_mode` line in any loaded Codex config file overrides the profile (evidence.md, "Codex CLI and plugin"). Before the job, run this check, with the job's `-C` folder as `<dir>`. It reads the user, system and project config files, from `<dir>` up to `/`, and skips comments: `sh -c 'd=$1; set --; while :; do set -- "$@" "$d/.codex/config.toml"; [ "$d" = / ] && break; d=$(dirname "$d"); done; for f in "${CODEX_HOME:-$HOME/.codex}/config.toml" /etc/codex/config.toml "$@"; do [ -f "$f" ] && grep -Hn "^[[:space:]]*sandbox_mode" "$f"; done; true' sh '<dir>'`. It always exits 0. If it prints any line, also an error, do not start the job. It is a safety stop (see "Safety stops").
+- A `sandbox_mode` line in any loaded Codex config file overrides the profile (evidence.md, "Codex CLI and plugin"). Before the job, run this check, with the job's `-C` folder as `<dir>`. It reads the user, system and project config files, from `<dir>` up to `/`, and skips comments: `d='<dir>'; for f in "${CODEX_HOME:-$HOME/.codex}/config.toml" /etc/codex/config.toml; do [ -f "$f" ] && grep -Hn "^[[:space:]]*sandbox_mode" "$f"; done; while :; do [ -f "$d/.codex/config.toml" ] && grep -Hn "^[[:space:]]*sandbox_mode" "$d/.codex/config.toml"; p=$(dirname "$d"); [ "$p" = "$d" ] && break; d=$p; done; true`. It always exits 0. If it prints any line, also an error, do not start the job. It is a safety stop (see "Safety stops").
 - The profile blocks `~` and `$TMPDIR`. Python and the other Homebrew tools run, because of the `/opt/homebrew` entry.
 - The profile does not block every folder: in tests, other folders under `/private/tmp` stayed readable and writable (evidence.md, "Sandbox reads").
 - The `<temp>` entry stops reads and writes there, but an input inside `<temp>` stays readable. The CLI, not the sandbox, still writes the `-o` answer and the JSONL.
@@ -192,10 +185,10 @@ The watchdog solves one problem: the conductor stops before the work is finished
 Do this only when the user asks. The full findings of the last refresh are not kept.
 
 1. Check each area with two checkers on two vendors. Test the tools locally.
-2. Use at least two independent sources per capability where they exist. Name single-source facts.
+2. Use at least two independent sources per capability where they exist. Count all boards of one company, and all runs of one task set, as one source. Name single-source facts.
 3. When sources disagree, show both and the likely reason. If you did not check the reason, say so.
 4. Replace each table in `evidence.md`, and set the check date at its top.
-5. Update the "Pick the model" table, and the other rules that the new facts change.
+5. Update the "Pick the model" table, the reasons in `evidence.md`, and the other rules that the new facts change.
 
 ## Files
 

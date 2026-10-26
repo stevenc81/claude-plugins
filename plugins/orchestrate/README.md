@@ -6,7 +6,7 @@ A skill that turns one Claude Code session into the conductor of a small agent t
 
 The skill sends each job to the model that is best at it, and it uses each plugin only for what it does well. Every run must be reliable: each teammate's result comes back to the conductor, or the conductor sees a clear failure and acts on it. The work must also be secure, and as simple as possible. Check every change against this goal.
 
-The rules are in [`skills/conduct/SKILL.md`](skills/conduct/SKILL.md). The benchmark numbers and their sources are in [`skills/conduct/evidence.md`](skills/conduct/evidence.md). The date the model facts were checked is at the top of `evidence.md`.
+The rules are in [`skills/conduct/SKILL.md`](skills/conduct/SKILL.md). The benchmark numbers, their sources and the reason for each model choice are in [`skills/conduct/evidence.md`](skills/conduct/evidence.md). The date the model facts were checked is at the top of `evidence.md`.
 
 ## What you need
 
