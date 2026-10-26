@@ -9,13 +9,14 @@ from common import AGENT, PLUGIN, Case
 
 with open(os.path.join(PLUGIN, "steps.md"), encoding="utf-8") as f:
     STEPS = "Steps from the specialists plugin:\n\n" + f.read()
-TOOLS = "tools: Read, Bash, Edit, Write, WebFetch, WebSearch"
+TOOLS = "tools: Read, Bash, Edit, Write, WebFetch, WebSearch, SendMessage"
+PREV_TOOLS = "tools: Read, Bash, Edit, Write, WebFetch, WebSearch"
 OLD_TOOLS = "tools: Read, Bash, Edit, Write"
 OLD_BODY = "The specialists plugin gives you your steps when you start. Your memory folder holds what you learned in earlier jobs.\n"
 EXAMPLE = """---
 name: specialist-claude-plugins
 description: "Use only for jobs in the area claude-plugins: Code, tests and docs of the claude-plugins repo."
-tools: Read, Bash, Edit, Write, WebFetch, WebSearch
+tools: Read, Bash, Edit, Write, WebFetch, WebSearch, SendMessage
 memory: user
 ---
 You are the specialist for the area `claude-plugins`. You know the layout, the tests and the release steps of this repo.
@@ -27,7 +28,7 @@ CREATE = ["create", "claude-plugins", "--description",
 GOOD = """---
 name: specialist-tt
 description: "Use only for jobs in the area tt: Build facts."
-tools: Read, Bash, Edit, Write, WebFetch, WebSearch
+tools: Read, Bash, Edit, Write, WebFetch, WebSearch, SendMessage
 memory: user
 ---
 You are the specialist for the area `tt`. You know the build facts.
@@ -260,12 +261,14 @@ class Check(Case):
                 self.assertEqual((p.returncode, p.stdout), (0, f"OK {path}\n"))
 
     def test_old_tools(self):
-        path = self.write(OLD)
-        p = self.agent("check", "tt")
-        self.assertEqual((p.returncode, p.stdout), (0, f"updated {path}\nOK {path}\n"))
-        self.assertEqual(self.read(path).split("\n")[3], TOOLS)
-        self.assertEqual(self.read(path), GOOD)
-        self.assertEqual(self.agent("check", "tt").stdout, f"OK {path}\n")
+        for old in (OLD_TOOLS, PREV_TOOLS):
+            with self.subTest(old=old):
+                path = self.write(GOOD.replace(TOOLS + "\n", old + "\n"))
+                p = self.agent("check", "tt")
+                self.assertEqual((p.returncode, p.stdout), (0, f"updated {path}\nOK {path}\n"))
+                self.assertEqual(self.read(path).split("\n")[3], TOOLS)
+                self.assertEqual(self.read(path), GOOD)
+                self.assertEqual(self.agent("check", "tt").stdout, f"OK {path}\n")
 
     def test_check_leaves_bad_file(self):
         path = self.write(GOOD.replace(STEPS, OLD_BODY).replace("memory: user", "memory: project"))

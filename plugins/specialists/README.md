@@ -106,6 +106,7 @@ The script tests cover `agent.py`.
 - A specialist that Claude Code picks by its description skips `check`. So it can run with old steps, and its frontmatter hooks run as you each time it runs.
 - A description can widen its area to any job, and so steer which agent Claude Code picks. The fixed prefix, the banned words and the ban on non-ASCII characters lower this.
 - Specialists get no MCP tools. An MCP tool can send data out, such as mail or posts. Every specialist reaches the web, with `WebFetch`, `WebSearch` or `curl`.
+- Specialists get `SendMessage`, so a teammate can send a report longer than the 4,000 characters that Claude Code keeps of a final message. With it, a specialist can also message any agent or session whose name it knows.
 - Area names outside git repos may differ between sessions. The skill reads the existing descriptions first to lower this.
 
 ## License

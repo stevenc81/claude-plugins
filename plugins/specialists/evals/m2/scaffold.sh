@@ -8,7 +8,7 @@ cat > "$C/agents/specialist-evaltest.md" <<'AGENT'
 ---
 name: specialist-evaltest
 description: "Use only for jobs in the area evaltest: Build facts: code words and versions."
-tools: Read, Bash, Edit, Write, WebFetch, WebSearch
+tools: Read, Bash, Edit, Write, WebFetch, WebSearch, SendMessage
 memory: user
 ---
 You are the specialist for the area `evaltest`. You know the build facts.
