@@ -2,7 +2,7 @@
 
 This file holds the numbers and sources behind the "Pick the model" table in SKILL.md, the verdict on each source, and the reason for each choice in that table. SKILL.md holds the rules, including the 5 tests for a source and how to refresh this file ("Refresh the evidence"). This file holds the facts. Do not copy benchmark scores into SKILL.md.
 
-Checked on 2026-10-26. Two reviewers on two vendors (Claude Opus 5.5 and Gemini 4 Argon) scored 29 sources against the 5 tests. Two readers on the same two vendors then read the numbers from the sources that passed. The conductor checked each claim on which they disagreed. Rows that were not re-read keep their old date. AA = Artificial Analysis. "Tie" = the 95% intervals overlap. Where a board gives a standard error (SE), the interval is ±1.96 × SE. For Bug Hunt Bench, a tie means the ranges of the runs overlap.
+Checked on 2026-10-26. Two reviewers on two vendors (Claude Opus 5.5 and Gemini 4 Argon) scored 29 sources against the 5 tests. Two readers on the same two vendors then read the numbers from the sources that passed. The conductor checked each claim on which they disagreed. Rows that were not re-read keep their old date. AA = Artificial Analysis. "Tie" = the 95% intervals overlap. Where a board gives a standard error (SE), the interval is ±1.96 × SE. What each board's "±" means is in "Sources used", "How to read it".
 
 Arena notes:
 - arena.ai returns 403 to plain web tools. Its own dataset on Hugging Face (lmarena-ai/leaderboard-dataset, modified 2026-10-24) holds the same boards. Text, Vision and Search use its style-control subsets, the default.
@@ -10,31 +10,31 @@ Arena notes:
 
 ## Why each choice
 
-One line per row of the "Pick the model" table in SKILL.md. The numbers are in the sections below.
+One line per row of the "Pick the model" table in SKILL.md, and one for its images paragraph. The numbers are in the sections below.
 
 | Job | Why |
 |---|---|
-| Hard coding, large refactor | No primary source lists our models. Opus is clearly first on Agent Arena overall and first on Snorkel Senior SWE-bench and Vals Vibe Code Bench 1-100 (ties). Astra is the best non-Claude model on Snorkel, Code Migration and Vibe Code 1-100 (ties). |
-| Routine coding with a clear scope | Sonnet leads Vals Vibe Code Bench and Code Migration (ties). 6.1 Sol ties Sonnet on Vibe Code Bench at a fifth of the cost. |
+| Hard coding, large refactor | No primary source decides this row: SWE-rebench lists only gpt-5.6-sol. Opus is clearly first on Agent Arena overall and first on Snorkel Senior SWE-bench and Vals Vibe Code Bench 1-100 (ties). Astra is the best non-Claude model on Snorkel, Code Migration and Vibe Code 1-100 (ties). |
+| Routine coding with a clear scope | Sonnet leads Vals Vibe Code Bench and Code Migration (ties). Astra is the only non-Claude model in the top tie on both boards. Argon scores higher than Astra on Vibe Code Bench, but far below the top on Code Migration (70.80). |
 | Shell, infra and deploy work | Opus is clearly first on Agent Arena bash reliability. Of the non-Claude models, gpt-5.6-sol scores highest there. Argon scores below the average model. One board only. |
 | Debugging, root cause | Bug Hunt Bench, primary: Sonnet at max has the best mean. Its runs overlap those of Astra, 6.1 Sol, Opus and Argon, so it is a tie. Astra at max is the best non-Claude model. |
 | Code review | No source passed the tests. Bug Hunt Bench finds and fixes bugs, the nearest test, so the row follows Debugging. |
 | Front-end and web UI | Opus is clearly first on WebDev Arena. Astra is second. Vals Vibe Code Bench puts 7 of our models in a tie. |
-| Math | MathArena, primary: 6.1 Sol leads, ties Astra and Fable, and is clear of Opus. Epoch FrontierMath agrees. Opus is the best non-OpenAI model. |
+| Math | MathArena, primary: 6.1 Sol leads, ties Astra and Fable, and is clear of Opus. Epoch FrontierMath puts 6.1 Sol and Astra level at the top, tied with Opus. Opus is the best non-OpenAI model. |
 | Scientific or data research that runs code | Vals MysteryMechanism: Astra leads, and ties Opus, Sonnet, Fable, 6.1 Sol and Argon. One board only. |
 | Analysis, reports, documents | Five Vals boards: Opus, Fable, Sonnet and Argon tie on four. Argon is clearly first on HLAB (legal work with files). No clear winner, so the choice follows the tools: Claude reads PDFs and runs code. |
-| Judgment, planning, critique | Opus leads Agent Arena steerability and Arena Instruction Following, and ties Argon on Arena Hard Prompts. Opus leads Vals KSP. Astra leads ARC-AGI-2 and 3, with no intervals. |
+| Judgment, planning, critique | Opus leads Agent Arena steerability and Arena Instruction Following, and ties Argon on Arena Hard Prompts. Astra leads ARC-AGI-2 and 3, with no intervals. Argon is second: it scores 39 and 46 points above Astra on Hard Prompts and Instruction Following. |
 | Fact check of claims | FACTS Search measures answers found with web search: Astra leads, tied with 5.6 Sol and 6.1 Sol. Opus scores above Argon. Fable and Sonnet are not listed. |
-| Web research across many sources | Arena Search: 5.6 Sol, 6.1 Sol and Astra tie at the top, and Fable ties Astra. Astra also leads FACTS Search. Fable is the best non-OpenAI model on Arena Search. |
+| Web research across many sources | Arena Search (people's votes): 5.6 Sol, 6.1 Sol and Astra tie at the top, and Fable ties Astra. FACTS Search (correct answers found with search) measures the job most directly, and Astra leads it, so Astra is first. Fable is the best non-OpenAI model on Arena Search. |
 | Long documents or code over 100k tokens | No source passed the tests. `agy` compacts Argon's conversation far below its 1M window (see "Long context and media"). Claude has a 1M context. |
 | Video or audio input | No source passed the tests. Only Gemini takes video and audio in this setup. The video efforts follow Google's Vertex AI guide. |
 | Bulk simple work | No source measures quality on simple work. Haiku has the Claude Code tools. Haiku and Flash are weak at long agent work (see "Weak spots"). |
 | Speed-critical short answers | AA: Sonnet at low has the fastest first token (1.2 s). Of the non-Claude models at low, gpt-5.6-sol is fastest (2.1 s). AA tests the Gemini models at high only. |
-| Images and screenshots | Roboflow: Argon leads detection, counting and OCR. Vision Arena: 6 of our models tie, and Argon is not listed. |
+| Images and screenshots | Roboflow: Argon leads detection and counting (3 runs). Its OCR score is one run, so OCR is not used. Vision Arena: 6 of our models tie, and Argon is not listed. |
 
 ## Sources
 
-Verdicts from 2026-10-26. The tests are in SKILL.md, "Refresh the evidence". Test 1 fails an operator that a model maker pays to test its models, also when no lab is named.
+Verdicts from 2026-10-26. The tests are in SKILL.md, "Refresh the evidence".
 
 ### Sources used
 
@@ -42,28 +42,29 @@ A refresh reads numbers only from these sources (SKILL.md, "Refresh the evidence
 
 | Source | Verdict | Failed tests and why | How to read it |
 |---|---|---|---|
-| MathArena | Primary | None. New contests, 4 runs per problem, 95% intervals. Epoch AI funds it with a grant. | matharena.ai/models for the headline table. matharena.ai/competition_tables/<id> for each contest. Plain web tools work. |
-| Bug Hunt Bench | Primary for rows with 3 or more runs. Secondary for rows with 1 or 2 runs (test 3). | None for 3-run rows. Answer key held back, each model in its own CLI. | bughunt.productcompass.pm/data/benchmark.json. Use rows without a `superseded` note. `n_runs` gives the runs. |
-| SWE-rebench | Primary, cannot decide a row | Only gpt-5.6-sol (medium, 62.3% ±1.83 SEM, 5 runs). Its newest window ends 2026-07-01. | swe-rebench.com. Use the newest time window. |
-| arena.ai, all boards | Secondary | 1: it ranks its own Max router first on Agent Arena (arena.ai blog, 2026-10-12) and sells evaluations to model labs. | arena.ai returns 403 to plain web tools. Read the Hugging Face dataset lmarena-ai/leaderboard-dataset, files `<subset>/latest-00000-of-00001.parquet`, the `*_style_control` subsets. Its agent subsets hold only "overall": Agent Arena sub-boards such as Code need arena.ai in a real browser. |
-| Vals AI, boards with a private test set | Secondary | 1: "Companies pay Vals to test their models" (TechCrunch, 2026-09-19). | vals.ai/benchmarks/<slug>. Use a board only if its page says the test set is private or held out (vals.ai/methodology). Skip indexes that mix in public boards. |
-| Artificial Analysis, speed tests | Secondary | 1: it does custom benchmarking for AI companies. | artificialanalysis.ai/models/<slug>. The values are in the page's embedded data (`timescaleData`), prompt type "long". |
-| Epoch FrontierMath | Secondary | 1: paid work for Google DeepMind and OpenAI (epoch.ai/about/transparency). OpenAI funds FrontierMath. | epoch.ai/data/benchmark_data.zip, files frontiermath_tiers_1_3_v2.csv and frontiermath_tier_4_v2.csv |
-| Snorkel Senior SWE-bench | Secondary | 1. No intervals shown: pass@3 implies 3 attempts per task. | senior-swe-bench.snorkel.ai/agents |
-| FACTS Search V2 (Kaggle) | Secondary | 1: Google runs it. | kaggle.com/benchmarks/google/facts-search/versions/2. The table shows only in a real browser. |
-| ARC Prize | Secondary | 3: no intervals or run counts. | arcprize.org/media/data/evaluations.json and models.json |
-| Roboflow Vision Evals | Secondary | 4 not shown: the page does not say the set is private, and the Reasoning page shows real samples with answers. OCR is a single run. | playground.roboflow.com/evals. WebFetch and a real browser work. |
+| MathArena | Primary | None. New contests, 4 runs per problem, 95% intervals. Epoch AI funds it with a grant. | matharena.ai/models for the headline table. matharena.ai/competition_tables/<id> for each contest. Plain web tools work. "±" is a 95% interval. |
+| Bug Hunt Bench | Primary for rows with 3 or more runs. Secondary for rows with 1 or 2 runs (test 3). | None for 3-run rows. Answer key held back, each model in its own CLI. | bughunt.productcompass.pm/data/benchmark.json. Use rows without a `superseded` note. `n_runs` gives the runs. A tie means the ranges of the runs overlap. |
+| SWE-rebench | Primary, cannot decide a row | None. It lists only one of our models (see "Coding and agentic work"). | swe-rebench.com. Use the newest time window. "±" is the SEM of 5 runs. |
+| arena.ai, all boards | Secondary | 1: it ranks its own Max router first on Agent Arena (arena.ai blog, 2026-10-12) and sells evaluations to model labs. | arena.ai returns 403 to plain web tools. Read the Hugging Face dataset lmarena-ai/leaderboard-dataset, files `<subset>/latest-00000-of-00001.parquet`, the `*_style_control` subsets. `[low, high]` is a 95% interval. The agent subsets hold only the category "overall", which includes its signals (bash reliability, steerability, tool hallucination). Category boards such as Code need arena.ai in a real browser. |
+| Vals AI, boards with a private test set | Secondary | 1: "Companies pay Vals to test their models" (TechCrunch, 2026-09-19). | vals.ai/benchmarks/<slug>. Use a board only if its page says the test set is private or held out (vals.ai/methodology). Skip indexes that mix in public boards. "±" is a standard error (vals.ai/methodology). |
+| Artificial Analysis, speed tests | Secondary | 1: it does custom benchmarking for AI companies. | artificialanalysis.ai/models/<slug>. The values are in the page's embedded data (`timescaleData`), prompt type "long". No intervals. |
+| Epoch FrontierMath | Secondary | 1: paid work for Google DeepMind and OpenAI (epoch.ai/about/transparency). OpenAI funds FrontierMath. | epoch.ai/data/benchmark_data.zip, files frontiermath_tiers_1_3_v2.csv and frontiermath_tier_4_v2.csv. "±" is the stderr column. |
+| Snorkel Senior SWE-bench | Secondary | 1: it sells data and evaluation work to AI labs (the step-2 reviewers' verdict; their quote was not kept). | senior-swe-bench.snorkel.ai/agents. No intervals shown: pass@3 implies 3 attempts per task. |
+| FACTS Search V2 (Kaggle) | Secondary | 1: Google runs it. | kaggle.com/benchmarks/google/facts-search/versions/2. The table shows only in a real browser. The page does not say what "±" means (not checked further). This file reads it as a 95% interval. |
+| ARC Prize | Secondary | 3: no intervals or run counts. | arcprize.org/media/data/evaluations.json and models.json. No intervals. |
+| Roboflow Vision Evals | Secondary | 4 not shown: the page does not say the set is private, and the Reasoning page shows real samples with answers. OCR also fails 3 (one run), so OCR is not used. | playground.roboflow.com/evals. WebFetch and a real browser work. "±" is half the range of 3 runs. |
 
-Vendor docs and model cards are not used for ranking (tests 1 and 2). They stay the source for prices, limits and effort names.
+Vendor docs and model cards are not used for ranking (tests 1 and 2). They stay the source for prices, limits, effort names and the vendors' advice on effort.
 
 ### Sources not used
 
 | Source | Failed tests and why |
 |---|---|
 | METR time horizons | Passed all 5 tests, but lists none of our models, and "This page is no longer actively updated" (last update 2026-09-08). Removed at the user's request on 2026-10-26. |
-| Vals AI, boards on public task sets, and the Vals Index | 1, 4 |
+| Vals AI, boards on public task sets, and the Vals Index | 1 (as Vals above), 4: public task sets. The Vals Index mixes in public boards. |
+| Vals Time Horizon Index: KSP | 1 (as Vals above), 3: one campaign per model, no error range. |
 | Artificial Analysis, other boards | 1, and 3 or 4. The Intelligence Index includes Terminal-Bench 4 and HLE. |
-| Epoch ECI and SimpleQA Verified | 1, and 3 or 4 |
+| Epoch ECI and SimpleQA Verified | 1 (as Epoch above). ECI also fails 2: it takes each model's best score over all settings. SimpleQA Verified also fails 4: a public set. |
 | FACTS Grounding v2 (Kaggle) | 1, 3: no interval or run count. |
 | Terminal-Bench 4 (tbench.ai, Vals, AA) | 2, 4, 5: Epoch rates it "Flawed", 30 of 66 tasks (45.5%) have scoring errors. |
 | LiveBench 2.0 | 1 (sponsored by Abacus.AI, which it ranks), 3 (one run per suite) |
@@ -73,7 +74,13 @@ Vendor docs and model cards are not used for ranking (tests 1 and 2). They stay 
 | Parallel.ai search board | 1, 3, 5 |
 | Gateway pages (OpenRouter, Eden AI, ZenMux) | 1 (they resell the models), 2 (live traffic, mixed prompts and settings) |
 | benchlm.ai | 2: it copies other boards. |
-| Deep Research Bench, HELM Long Context, Fiction.LiveBench, SWE-bench-Live, Martian Code Review Bench, tau-bench, Video-MME | 2 or more each |
+| Deep Research Bench | 2 (setup), 3 (repeat runs), 4 (public questions). Step-2 scores. |
+| HELM Long Context | 3, 4. Step-2 scores. |
+| Fiction.LiveBench | 3, 4. Step-2 scores. |
+| SWE-bench-Live | 2, 3. Step-2 scores. |
+| Martian Code Review Bench | 3, 4. Step-2 scores. |
+| tau-bench | 2, 4. Step-2 scores. |
+| Video-MME | 2, 3, 4. Step-2 scores. |
 
 ## Coding and agentic work
 
@@ -81,7 +88,7 @@ Vendor docs and model cards are not used for ranking (tests 1 and 2). They stay 
 |---|---|---|
 | Bug Hunt Bench (primary for rows with 3 or more runs) | 105 real bugs in two TypeScript repos (a VS Code extension of about 28K lines, 45 bugs; a React/Supabase app of about 60K lines, 60 bugs). Graded blind against an answer key that is held back. Each model runs in its own CLI. Mean bugs fixed, runs, list cost: Sonnet 5.5 max 51.3 (57/54/43, $154.03), Astra max 45.0 (48/40/47, $33.03), 6.1 Sol max 44.3 (44/42/47, $5.88), 6.1 Sol xhigh 42.7 ($4.35), Opus 5.5 max 41.7 (43/39/43, $58.53), Argon high 40.7 (40/45/37, $7.16), Haiku 5.5 xhigh 18.3 ($4.80), 3.8 Flash high 18.0 ($11.03). Sonnet, Astra, 6.1 Sol, Opus and Argon tie. Rows with fewer than 3 runs: gpt-5.6-sol max 43.5 (2 runs), Fable 5.1 max 43 (1 run), Haiku max 21.5 (2 runs). The board: "Read a gap of a few points between two single runs as possible noise." | bughunt.productcompass.pm/data/benchmark.json, updated 2026-10-23, read 2026-10-26 |
 | Agent Arena, overall (net improvement) | Opus max 20.8 [18.4, 23.2], Sonnet max 14.0, Astra max 14.0, Fable max 13.9, 6.1 Sol max 13.6, Argon high 11.8 [10.8, 12.7], 5.6 Sol xhigh 6.1, 3.8 Flash 3.2, Haiku high 1.1. Opus is clear. Ranks 2 to 6 tie. Median cost per task on 2026-10-23: Fable $8.07, Opus $6.37, Sonnet $4.47, Astra $4.38, Argon $1.07, Flash $0.81, 6.1 Sol $0.80, Haiku $0.10. | HF dataset, published 2026-10-23, read 2026-10-26; costs from arena.ai/leaderboard/agent, read 2026-10-25 |
-| Agent Arena, Code (net improvement) | Opus 22.87±3.48, Sonnet 15.76±4.30, Astra 14.84±3.09, 6.1 Sol 14.46±2.31, Fable 13.89±2.92, Argon 10.18±1.24. Opus and Sonnet touch. Cost per Code task: Fable $21.25, Opus $13.77, Astra $10.84, Sonnet $9.01, Argon $2.40, 6.1 Sol $1.76, Flash $1.57, Haiku $0.43. The dataset holds only "overall" for agent boards, so this board was not re-read on 2026-10-26. | arena.ai/leaderboard/agent/code, 2026-10-23 |
+| Agent Arena, Code (net improvement) | Opus 22.87±3.48, Sonnet 15.76±4.30, Astra 14.84±3.09, 6.1 Sol 14.46±2.31, Fable 13.89±2.92, Argon 10.18±1.24. Opus and Sonnet touch. Cost per Code task: Fable $21.25, Opus $13.77, Astra $10.84, Sonnet $9.01, Argon $2.40, 6.1 Sol $1.76, Flash $1.57, Haiku $0.43. Not re-read on 2026-10-26 (see arena.ai in "Sources used"). | arena.ai/leaderboard/agent/code, 2026-10-23 |
 | Agent Arena, bash reliability (net improvement) | "How often the model's bash commands succeed. Errors outside its control aren't counted." Opus 15.8 [15.3, 16.3] (#1), Sonnet 13.2, 5.6 Sol 12.0, Flash 10.9, Fable 10.6, Astra 9.3, Haiku 7.6, 6.1 Sol 3.9, Argon −4.0 [−5.2, −2.9]. Opus is clear. Sonnet ties 5.6 Sol. | HF dataset, published 2026-10-23, read 2026-10-26 |
 | Snorkel Senior SWE-bench (Mini-SWE-agent, 95 scored tasks) | "Tasteful" pass@1: Opus 5.5 high 39.3 (#1; max 36.9, xhigh 34.1), Astra high 36.8, Fable 5.1 medium 34.7, gpt-5.6-sol xhigh 34.7. Basic pass@1: Opus 61.8, Astra 60.0, Fable 57.9, 5.6 Sol 53.7. No intervals shown. A binomial interval on 95 tasks is about ±10 points, so all four tie (computed by the reader, not by Snorkel). Sonnet, Haiku, 6.1 Sol, Argon and Flash not listed. | senior-swe-bench.snorkel.ai/agents, read 2026-10-26 |
 | Vals Code Migration v1.1 (Pi agent harness) | Sonnet max 86.88±1.52 ($43.88 per test), Opus max 81.01±3.21, Astra max 80.58±2.34, 6.1 Sol max 77.32±2.98 ($9.51), Argon high 70.80±3.72, Haiku 52.36, Flash 38.65. Sonnet ties Opus and Astra. Grading uses a hidden suite of behavior tests, but the source programs come from open-source repos. | vals.ai/benchmarks/code-migration-v1-1, updated 2026-10-20 |
@@ -124,7 +131,6 @@ Vendor docs and model cards are not used for ranking (tests 1 and 2). They stay 
 | Agent Arena, steerability (net improvement) | Opus 17.6 [15.6, 19.6], Fable 15.3, Astra 14.5 (tie), Argon 14.4, 6.1 Sol 13.7, Sonnet 10.8, 5.6 Sol 8.4, Haiku 4.5, Flash 1.2 | HF dataset, published 2026-10-23, read 2026-10-26 |
 | ARC-AGI-2 (semi-private) | Astra max 95.0 ($1.12 per task; xhigh 93.3), 6.1 Sol max 94.2 ($0.25), Opus high 93.3 ($0.41; xhigh 92.5, max 91.7), 5.6 Sol max 92.5, Argon high 91.3 ($0.32), Fable max 90.0 ($4.49), Flash high 89.2, Sonnet xhigh 83.9, Haiku xhigh 61.3. No intervals. | arcprize.org/media/data/evaluations.json, modified 2026-10-21, read 2026-10-26 |
 | ARC-AGI-3 (interactive, Provider Adapter harness) | Astra high 99.9, Argon low 97.5 / high 97.3, 6.1 Sol xhigh 96.4, Sonnet xhigh 72.4, Flash high 35.0, Haiku max 2.8. Opus 5.5 and Fable 5.1 not listed. The standard harness scores far lower (Astra max 62.7). No intervals. | arcprize.org/media/data/evaluations.json, read 2026-10-26 |
-| Vals Time Horizon Index: KSP (one campaign per model) | Opus 91.33 ($1,303), Astra 90.50 ($4,207), Fable 63.33, Argon 52.50, 5.6 Sol 23.83, Flash 18.83. "These are individual campaigns, not repeated-trial averages." | vals.ai/benchmarks/time_horizon_index, updated 2026-10-07 |
 
 ## Facts and web search
 
@@ -202,17 +208,17 @@ Only "Low-cost mode" in SKILL.md uses these facts.
 
 ## Known gaps
 
-Each company counts once here (see "Sources").
+Each company counts once here (SKILL.md, "Refresh the evidence", step 5).
 
 - Primary sources cover only math and debugging. Every other row rests on secondary sources or on none.
 - Code review, long context, video, audio and bulk simple work: no source passed the tests.
 - Shell and infra: one board (Agent Arena bash reliability).
 - Science: one board (Vals MysteryMechanism), with a 6-way tie.
 - Debugging: one source with 2 TypeScript repos. Sonnet's three runs span 43 to 57.
-- Hard coding: SWE-rebench passes all 5 tests but lists only gpt-5.6-sol, from a window that ended on 2026-07-01.
-- Agent Arena Code was not re-read on 2026-10-26: the dataset holds only "overall" for agent boards, and arena.ai returns 403.
+- Hard coding: no primary source decides it (see SWE-rebench in "Sources used").
+- Agent Arena Code was not re-read on 2026-10-26 (see arena.ai in "Sources used").
 - Fable 5.1 and gpt-5.6-sol have no Bug Hunt row with 3 or more runs. Sonnet and Haiku are not on MathArena.
-- Roboflow: whether its test set is private is not stated. One checker quoted a sentence that says so, but the conductor did not find it on the page.
+- Roboflow: whether its test set is private is not stated. OCR is not used. One checker quoted a sentence that says so, but the conductor did not find it on the page.
 - Tool versions: this machine runs `agy` 1.4.7 and Codex 0.164.0. The `agy` compaction and media tests ran on 1.4.3 and 1.4.5. Most `codex exec` tests ran on 0.163.0. On 0.164.0 only the `--json` stream, the flags, `exec resume` access and the profile values were checked.
 
 ## Full research
