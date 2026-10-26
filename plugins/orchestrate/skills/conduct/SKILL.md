@@ -31,27 +31,34 @@ If the user's answer would change the work and you cannot find it yourself, ask 
 3. For an independent check or a critic, use the first model in the check's own row (such as "Code review") whose vendor differs from the vendor that did the work.
 4. Split the work by strength, not evenly.
 5. If no row fits, use the nearest row.
-6. If a row says "no clear winner", pick by tools. Claude teammates have the Claude Code tools, but a specialist has no MCP tools. Codex reads any file and runs code. Gemini searches the web and reads the files and folders you pass to it, but one ask cannot both open web pages and read files (gemini plugin README, "The tool gate"). Gemini runs no code or commands.
+6. If a row says "no clear winner" or "No source", pick by tools. Claude teammates have the Claude Code tools, but a specialist has no MCP tools. Codex reads any file and runs code. Gemini searches the web and reads the files and folders you pass to it, but one ask cannot both open web pages and read files (gemini plugin README, "The tool gate"). Gemini runs no code or commands.
 7. If a job fails, follow "Results and retries".
+
+The table uses only the sources in `evidence.md`, "Sources used". A primary source decides a row. Secondary sources decide only a row with no primary source. Confidence:
+
+- High: a primary source puts the first choice ahead, and the intervals do not overlap.
+- Medium: a primary source, but the top models tie. The first choice has the best score.
+- Low: secondary sources only.
+- No source: no source passed the tests. The choice follows the tools (rule 6).
 
 | Job | First choice | Second choice | Confidence |
 |---|---|---|---|
-| Hard coding, large refactor | Claude Opus 5.5, xhigh | Codex gpt-6.1-sol, xhigh | Medium |
-| Routine coding with a clear scope | Claude Sonnet 5.5, medium | Codex gpt-6.1-sol, medium | Medium |
-| Shell, infra and deploy work | Claude Opus 5.5, xhigh | Codex gpt-6-astra, xhigh | Low |
-| Debugging, root cause | Claude Sonnet 5.5, max | Codex gpt-6.1-sol, xhigh | Low |
-| Code review | Claude Opus 5.5, high | Codex gpt-6.1-sol, high | Low |
-| Front-end and web UI | Claude Opus 5.5, max | Codex gpt-6-astra, max | High |
-| Math | Codex gpt-6.1-sol, max | Claude Opus 5.5, high | Low |
-| Scientific or data research that runs code | Codex gpt-6-astra, xhigh | Claude Opus 5.5, high | Medium |
-| Analysis, reports, documents | Claude Opus 5.5, high | Gemini 4 Argon, high | Medium |
+| Hard coding, large refactor | Claude Opus 5.5, xhigh | Codex gpt-6-astra, xhigh | Low |
+| Routine coding with a clear scope | Claude Sonnet 5.5, medium | Codex gpt-6.1-sol, medium | Low |
+| Shell, infra and deploy work | Claude Opus 5.5, xhigh | Codex gpt-5.6-sol, xhigh | Low |
+| Debugging, root cause | Claude Sonnet 5.5, max | Codex gpt-6-astra, max | Medium |
+| Code review | Claude Sonnet 5.5, max | Codex gpt-6-astra, max | No source: use the Debugging row |
+| Front-end and web UI | Claude Opus 5.5, max | Codex gpt-6-astra, max | Low |
+| Math | Codex gpt-6.1-sol, max | Claude Opus 5.5, high | Medium |
+| Scientific or data research that runs code | Codex gpt-6-astra, xhigh | Claude Opus 5.5, high | Low |
+| Analysis, reports, documents | Claude Opus 5.5, high | Gemini 4 Argon, high | Low: no clear winner |
 | Judgment, planning, critique | Claude Opus 5.5, high | Gemini 4 Argon, high | Low |
-| Fact check of claims | Gemini 4 Argon, high | Codex gpt-6-astra, high, with `--search` | Low |
-| Web research across many sources | Claude Fable 5.1, high | Codex gpt-5.6-sol, xhigh, with `--search` | Low |
-| Long documents or code over 100k tokens | Claude Opus 5.5, high | Gemini 4 Argon, high | Low |
-| Video or audio input | Gemini 3.8 Flash, medium. For long or dense video: Gemini 4 Argon, high. | None | Medium for video, low for audio |
-| Bulk simple work: extraction, classification, short summaries | Claude Haiku 5.5, low. Use medium for several steps. | Gemini 3.8 Flash, low. Use medium for several steps. | Low: no clear winner |
-| Speed-critical short answers | Claude Sonnet 5.5, low | Gemini 3.8 Flash, low | Medium |
+| Fact check of claims | Codex gpt-6-astra, high, with `--search` | Claude Opus 5.5, high | Low |
+| Web research across many sources | Codex gpt-6-astra, high, with `--search` | Claude Fable 5.1, high | Low |
+| Long documents or code over 100k tokens | Claude Opus 5.5, high | Gemini 4 Argon, high | No source |
+| Video or audio input | Gemini 3.8 Flash, medium. For long or dense video: Gemini 4 Argon, high. | None | No source |
+| Bulk simple work: extraction, classification, short summaries | Claude Haiku 5.5, low. Use medium for several steps. | Gemini 3.8 Flash, low. Use medium for several steps. | No source |
+| Speed-critical short answers | Claude Sonnet 5.5, low | Codex gpt-5.6-sol, low | Low |
 
 Images and screenshots: use the model that already does the job. For object detection and OCR, use Gemini 4 Argon. Gemini (`/gemini:ask --image-out`) and Codex (its image tool, with `-s workspace-write`) make images.
 
@@ -61,27 +68,24 @@ Use only the models in this section, each through its own vendor's tool (see "Ho
 
 ## Effort
 
-The table sets the effort for each job. Higher effort adds wait time fast and stops helping early. Change the effort only for these reasons, for a reason written in the plan ("Pick the model" rule 2), and in "Low-cost mode". Never go below low:
+The table sets the effort for each job. Higher effort adds wait time fast. Change the effort only for these reasons, for a reason written in the plan ("Pick the model" rule 2), and in "Low-cost mode". Never go below low:
 
 - Claude:
   - If a job will run over 30 minutes, raise it to xhigh if it is lower. Anthropic advises this.
   - Do not raise a job to max, except where the table sets max, or to retry a job that failed at xhigh.
-  - Keep Fable 5.1 at high, also for long jobs. Above high, its AA index and MathArena scores barely change.
+  - Keep Fable 5.1 at high, also for long jobs. Above high, its MathArena score does not rise.
 - Codex:
-  - Do not use max with gpt-6.1-sol or gpt-6-astra for coding, except front-end work. It scored lower than high or xhigh.
-  - Max helps math and front-end work.
   - Use ultra only for work that splits into independent parts. No test shows that it helps the GPT-6 models.
 - Gemini:
-  - Do not raise 3.8 Flash above medium for text jobs. It gains almost nothing there. For media, follow the video row.
-  - Argon at medium scores close to high on ARC-AGI. Low is far behind. Do not use low for hard work.
+  - Argon at medium scores close to high on Bug Hunt Bench. Low is behind. Do not use low for hard work.
 - On any vendor, if speed matters more than quality, lower the effort by one step. Keep Fable 5.1 at high.
 
 ## Low-cost mode
 
 Use low-cost mode only when the user asks for it, for one vendor or for all. Write it in the plan. It stays on until the user ends it. Apply it once to each model choice on that vendor, after the other rules, also to a next model and to the checks in "Checking a thesis". A retry keeps the changed choice. Low-cost mode keeps the vendor:
 
-- Claude: lower the effort by one step. Leave a job at low as it is. For Fable 5.1, keep a web research job as it is, and move any other job to Opus 5.5 at medium.
-- Codex: if the model is gpt-6-astra, move it to gpt-6.1-sol at the same effort. Else, if it is gpt-6.1-sol, lower the effort by one step. Leave a job at low as it is.
+- Claude: lower the effort by one step. Leave a job at low as it is. Keep Fable 5.1 at high.
+- Codex: if the model is gpt-6-astra, move it to gpt-6.1-sol at the same effort. Else, lower the effort by one step. Leave a job at low as it is.
 - Gemini: move Argon from high to medium. Leave 3.8 Flash as it is.
 
 The reasons are in `evidence.md`, "Plans, quotas and prices".
@@ -184,11 +188,19 @@ The watchdog solves one problem: the conductor stops before the work is finished
 
 Do this only when the user asks. The full findings of the last refresh are not kept.
 
-1. Check each area with two checkers on two vendors. Test the tools locally.
-2. Use at least two independent sources per capability where they exist. Count all boards of one company, and all runs of one task set, as one source. Name single-source facts.
-3. When sources disagree, show both and the likely reason. If you did not check the reason, say so.
-4. Replace each table in `evidence.md`, and set the check date at its top.
-5. Update the "Pick the model" table, the reasons in `evidence.md`, and the other rules that the new facts change.
+1. Read numbers only from the sources in `evidence.md`, "Sources used". Read each source as its row says. Do not add, drop or re-score a source unless the user asks.
+2. If a used source shows a sign that it now fails one of the tests in step 5, such as a new sponsor or no more intervals, tell the user. Change its verdict only if the user agrees.
+3. Read the numbers with two readers on two vendors. Give one Gemini ask at most 6 sources: an ask with 13 sources hit the 20-minute limit. Test the tools locally.
+4. When the readers disagree, check the fact yourself. Before a quote changes a verdict or a row, find the quote on the page yourself: a reader once quoted a sentence that the page does not have.
+5. To add a source, when the user asks, score it against these 5 tests. A company with several boards counts as one source, but a board can differ from the rest.
+   1. Independence: the operator does not sell a model in the table, does not rank its own product, and is not paid by a model maker to test its models or for evaluation, data or training work.
+   2. Same setup: the operator runs the tests itself, with a disclosed setup chosen by one rule for every model. "The same harness for all" and "each model in its own vendor's CLI" both pass. Scores that model makers submit, or that are copied from other boards, fail.
+   3. Repeat runs: each score comes from at least 3 runs, or has a published error range.
+   4. Private or new questions: the questions are private, held back, or newer than the models. A fully public, fixed set fails.
+   5. No large audit errors: no independent audit found scoring or answer errors in 20% or more of the tasks.
+6. A source that passes all 5 tests is primary. A source that fails 1 is secondary. A source that fails 2 or more is not used. A source that lists none of the table's models cannot decide a row. Put the source in "Sources used" or "Sources not used", with the reason and how to read it.
+7. Replace each table of numbers in `evidence.md`, and set the check date at its top. Prices, limits and effort names come from the vendors' docs: they are facts, not rankings.
+8. Update the "Pick the model" table, the reasons in `evidence.md`, and the other rules that the new facts change.
 
 ## Files
 
