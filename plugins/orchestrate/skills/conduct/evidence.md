@@ -203,7 +203,7 @@ Only "Low-cost mode" in SKILL.md uses these facts.
 | Fable 5.1 | MathArena: low 64.8±5.8, high 78.1±4.6, max 77.4±3.9. Snorkel: medium 34.7, high 32.6. | — |
 | 6.1 Sol | Bug Hunt: xhigh 42.7, max 44.3 (3 runs each, tie). AA first token: low 2.7 s, high 69.0 s, max 254.8 s. | — |
 | Astra | Bug Hunt: max 45.0 (3 runs). Other efforts have one run. MathArena: low 77.3±3.5, max 81.9±3.6 (tie). Snorkel: high 36.8, xhigh 35.8. | — |
-| Argon | Bug Hunt, 3 runs each: low 35.3, medium 39.3, high 40.7. Roboflow reasoning: low 89.4, high 91.4. | Google recommends medium for most work and high for hard math, science and agent tasks (vendor). The Gemini app defaults to medium; public boards test high (press). Through `agy` 1.4.7, Argon has no effort above high. `--model=gemini-4-argon --effort=max` fails with "gemini-4-argon has no "max" effort (available: low, medium, high)", and `--effort=xhigh` also fails. `--model=gemini-4-argon-high --effort=max` fails with "conflicts with --effort=max". `--model=gemini-4-argon --effort=high` works. So the `-<effort>` model IDs already reach the highest level (live test, 2026-10-26). |
+| Argon | Bug Hunt, 3 runs each: low 35.3, medium 39.3, high 40.7. Roboflow reasoning: low 89.4, high 91.4. | Google recommends medium for most work and high for hard math, science and agent tasks (vendor). The Gemini app defaults to medium; public boards test high (press). Through `agy` 1.5.0, Argon has no effort above high, though `agy --help` now lists xhigh and max (rechecked 2026-11-04). `--model=gemini-4-argon --effort=max` fails with "gemini-4-argon has no "max" effort (available: low, medium, high)", and `--effort=xhigh` also fails. `--model=gemini-4-argon-high --effort=max` fails with "conflicts with --effort=max". `--model=gemini-4-argon --effort=high` works. So the `-<effort>` model IDs already reach the highest level (live test, 2026-10-26). |
 | Codex ultra | No benchmark for GPT-6 | OpenAI: ultra splits work across parallel subagents. "Most tasks do not need Max or Ultra." In models_cache.json, gpt-6.1-sol, gpt-6-astra and gpt-6-sol take low to ultra ("Maximum reasoning with automatic task delegation"). gpt-6-luna and gpt-reserve stop at max (local, 2026-10-25). |
 
 ## Known gaps
@@ -219,7 +219,7 @@ Each company counts once here (SKILL.md, "Refresh the evidence", step 5).
 - Agent Arena Code was not re-read on 2026-10-26 (see arena.ai in "Sources used").
 - Fable 5.1 and gpt-5.6-sol have no Bug Hunt row with 3 or more runs. Sonnet and Haiku are not on MathArena.
 - Roboflow: whether its test set is private is not stated. OCR is not used. One checker quoted a sentence that says so, but the conductor did not find it on the page.
-- Tool versions: this machine runs `agy` 1.4.7 and Codex 0.164.0. The `agy` compaction and media tests ran on 1.4.3 and 1.4.5. Most `codex exec` tests ran on 0.163.0. On 0.164.0 only the `--json` stream, the flags, `exec resume` access and the profile values were checked.
+- Tool versions: this machine runs `agy` 1.5.0 and Codex 0.166.0. The `agy` compaction and media tests ran on 1.4.3 and 1.4.5. On 1.5.0, only the gemini smoke test, the time limit and the effort levels were checked. Most `codex exec` tests ran on 0.163.0. On 0.164.0 only the `--json` stream, the flags, `exec resume` access and the profile values were checked.
 
 ## Full research
 

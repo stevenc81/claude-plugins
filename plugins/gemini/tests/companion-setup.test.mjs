@@ -368,13 +368,13 @@ test("setup refuses --cwd, because agy runs only in its gated temp folder", asyn
 
 test("setup warns, and still runs, when agy is newer than the tested version", async () => {
   setRunReviewForTest(canaryOk);
-  setBinaryAvailableForTest(() => ({ available: true, detail: "1.5.0" }));
+  setBinaryAvailableForTest(() => ({ available: true, detail: "1.5.1" }));
   const { out, exitCode } = await runSetup();
-  assert.match(out, /Warning: agy 1\.5\.0 is newer than 1\.4\.7, the version this plugin was tested on\. Run `node ".*smoke-agy\.mjs"`/);
+  assert.match(out, /Warning: agy 1\.5\.1 is newer than 1\.5\.0, the version this plugin was tested on\. Run `node ".*smoke-agy\.mjs"`/);
   assert.match(out, /Ready\. Try/);
   assert.notEqual(exitCode, 1);
   const json = JSON.parse((await runSetup(["--json"])).out);
-  assert.match(json.versionWarning, /newer than 1\.4\.7/);
+  assert.match(json.versionWarning, /newer than 1\.5\.0/);
   assert.equal(json.promptOk, true);
   const smoke = json.versionWarning.match(/node "(.*)"/)[1];
   assert.ok(fs.existsSync(smoke), "the warning names a smoke test that exists");

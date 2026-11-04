@@ -17,7 +17,8 @@ export const DEFAULT_PROMPT_TIMEOUT_MS = 1_200_000;
 // the foreground with 9 minutes and in the background with the default 20.
 export const TIMEOUT_HINT =
   "If it ran in the foreground (9 minutes), run it with --background (20 minutes). Otherwise split the job into smaller parts.";
-// agy's own --print-timeout returns partial output with exit 0. Our wall-clock
+// In the stdin stream-json mode we use, agy's own --print-timeout returns
+// partial output with exit 0 (checked on 1.5.0; `agy -p` exits 3). Our wall-clock
 // timer runs a bit longer so that partial result can arrive before we kill.
 const WALL_CLOCK_GRACE_MS = 30_000;
 const SIGKILL_GRACE_MS = 1500;
@@ -232,8 +233,7 @@ function errorForExit({ code, signal, result, plain, stderr, model }) {
  * before it rejects, so the caller removes the temp folder only after agy is
  * gone.
  *
- * A run that hits agy's `--print-timeout` still exits 0 with partial output;
- * the stderr marker is the only reliable signal, surfaced as `timedOut`.
+ * The runner surfaces the stderr timeout marker as `timedOut`.
  */
 export function runReview(options = {}) {
   if (!options.prompt) {

@@ -102,7 +102,7 @@ export const MIN_HOOK_AGY_VERSION = [1, 4, 7];
 // The newest agy that this plugin was tested on, with tests/smoke-agy.mjs.
 // /gemini:setup warns on a newer one, so that someone runs the smoke test and
 // then raises this number.
-export const TESTED_AGY_VERSION = [1, 4, 7];
+export const TESTED_AGY_VERSION = [1, 5, 0];
 const SMOKE_TEST = fileURLToPath(new URL("../tests/smoke-agy.mjs", import.meta.url));
 
 // -1, 0 or 1 as the x.y.z in `version` is below, at or above `v`; null when
