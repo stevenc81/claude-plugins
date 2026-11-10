@@ -47,16 +47,16 @@ In a tie, the first choice has the best score. If the row's boards disagree on t
 |---|---|---|---|
 | Hard coding, large refactor | Claude Opus 5.5, xhigh | Codex gpt-6-astra, xhigh | Low |
 | Routine coding with a clear scope | Claude Sonnet 5.5, medium | Codex gpt-6-astra, medium | Low |
-| Shell, infra and deploy work | Claude Opus 5.5, xhigh | Codex gpt-5.6-sol, xhigh | Low |
+| Shell, infra and deploy work | Claude Opus 5.5, xhigh | Codex gpt-6.1-terra, max | Low |
 | Debugging, root cause | Claude Sonnet 5.5, max | Codex gpt-6-astra, max | Medium |
 | Code review | Claude Sonnet 5.5, max | Codex gpt-6-astra, max | No source: use the Debugging row |
 | Front-end and web UI | Claude Opus 5.5, max | Codex gpt-6-astra, max | Low |
 | Math | Codex gpt-6.1-sol, max | Claude Opus 5.5, high | Medium |
-| Scientific or data research that runs code | Codex gpt-6-astra, xhigh | Claude Opus 5.5, high | Low |
+| Scientific or data research that runs code | Codex gpt-6-astra, xhigh | Claude Fable 5.2, high | Low |
 | Analysis, reports, documents | Claude Opus 5.5, high | Gemini 4 Argon, high | Low: no clear winner |
-| Judgment, planning, critique | Claude Opus 5.5, high | Gemini 4 Argon, high | Low |
+| Judgment, planning, critique | Claude Opus 5.5, high | Gemini 4 Argon, high | Low: no clear winner |
 | Fact check of claims | Codex gpt-6-astra, high, with `--search` | Claude Opus 5.5, high | Low |
-| Web research across many sources | Codex gpt-6-astra, high, with `--search` | Claude Fable 5.1, high | Low |
+| Web research across many sources | Codex gpt-6-astra, high, with `--search` | Claude Opus 5.5, high | Low |
 | Long documents or code over 100k tokens | Claude Opus 5.5, high | Gemini 4 Argon, high | No source |
 | Video or audio input | Gemini 3.8 Flash, medium. For long or dense video: Gemini 4 Argon, high. | None | No source |
 | Bulk simple work: extraction, classification, short summaries | Claude Haiku 5.5, low. Use medium for several steps. | Gemini 3.8 Flash, low. Use medium for several steps. | No source |
@@ -75,9 +75,10 @@ The table sets the effort for each job. Higher effort adds wait time fast. Chang
 - Claude:
   - If a job will run over 30 minutes, raise it to xhigh if it is lower. Anthropic advises this.
   - Do not raise a job to max, except where the table sets max, or to retry a job that failed at xhigh.
-  - Always run Fable 5.1 at high: also for long jobs, when speed matters, and in "Low-cost mode". Above high, its MathArena score does not rise.
+  - Never run Fable 5.2 at max. On ARC-AGI-2 and ARC-AGI-3, it scores lower at max than at xhigh.
 - Codex:
   - Use ultra only for work that splits into independent parts. No test shows that it helps the GPT-6 models.
+  - Always run gpt-6.1-terra at max: also when speed matters, and in "Low-cost mode". On Bug Hunt Bench, it fixes 40.7 bugs at max and 11.3 at xhigh.
 - Gemini:
   - Argon at medium scores close to high on Bug Hunt Bench. Low is behind. Do not use low for hard work.
 - On any vendor, if speed matters more than quality, lower the effort by one step.
@@ -87,7 +88,7 @@ The table sets the effort for each job. Higher effort adds wait time fast. Chang
 Use low-cost mode only when the user asks for it, for one vendor or for all. Write it in the plan. It stays on until the user ends it. Apply it once to each model choice on that vendor, after the other rules, also to a next model and to the checks in "Checking a thesis". A retry keeps the changed choice. Low-cost mode keeps the vendor:
 
 - Claude: lower the effort by one step. Leave a job at low as it is.
-- Codex: if the model is gpt-6-astra, move it to gpt-6.1-sol at the same effort. Else, lower the effort by one step. Leave a job at low as it is.
+- Codex: if the model is gpt-6-astra, move it to gpt-6.1-sol at the same effort. Leave gpt-6.1-terra as it is (see "Effort"). Else, lower the effort by one step. Leave a job at low as it is.
 - Gemini: move Argon from high to medium. Leave 3.8 Flash as it is.
 
 The reasons are in `evidence.md`, "Plans, quotas and prices".
