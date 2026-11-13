@@ -100,6 +100,7 @@ test("passes stream-json in and out, the slash-command guard and the timeout as 
     "--input-format=stream-json",
     "--output-format=stream-json",
     "--disable-slash-commands",
+    '--settings={"agentMode":""}',
     "--print-timeout=60s"
   ]);
   assert.equal(captured.opts.cwd, "/tmp/xyz");
@@ -147,6 +148,7 @@ test("passes --model, --add-dir, --conversation and --json-schema before the str
     "--input-format=stream-json",
     "--output-format=stream-json",
     "--disable-slash-commands",
+    '--settings={"agentMode":""}',
     "--json-schema=/abs/schema.json",
     "--print-timeout=60s"
   ]);

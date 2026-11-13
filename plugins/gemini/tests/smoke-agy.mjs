@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Live smoke test for a new agy version. Requires agy on PATH and a working
- * sign-in. Runs three asks on gemini-3.8-flash-low and checks that:
+ * sign-in. Runs three asks on gemini-4-hydrogen-low and checks that:
  *   (a) media passed with --file reaches the model: a PNG, made at run time,
  *       that shows a random number;
  *   (b) the tool gate denies a read of a canary file outside the allowed
@@ -25,7 +25,7 @@ import { ASK_FILE_TOOLS } from "../scripts/gemini-companion.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const COMPANION = path.resolve(HERE, "..", "scripts", "gemini-companion.mjs");
-const MODEL = "gemini-3.8-flash-low";
+const MODEL = "gemini-4-hydrogen-low";
 
 // 5 x 7 pixel digits, one string per row.
 const DIGITS = {

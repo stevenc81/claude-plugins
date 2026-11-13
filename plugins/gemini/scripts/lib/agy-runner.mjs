@@ -294,6 +294,10 @@ function runSession({
   for (const dir of addDirs) args.push(`--add-dir=${dir}`);
   if (conversationId) args.push(`--conversation=${conversationId}`);
   args.push("--input-format=stream-json", "--output-format=stream-json", "--disable-slash-commands");
+  // From agy 1.5.7, a run with no saved agent mode starts in Auto, and agy then runs
+  // commands that no rule allows. The Default mode refuses them, so the tool gate
+  // is not the only barrier. It keeps the user's saved permissions.allow list.
+  args.push(`--settings=${JSON.stringify({ agentMode: "" })}`);
   if (jsonSchema) args.push(`--json-schema=${jsonSchema}`);
   args.push(`--print-timeout=${secondsForGoDuration(promptTimeoutMs)}`);
   const proc = spawnFn("agy", args, { cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });

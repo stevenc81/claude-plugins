@@ -94,15 +94,15 @@ export function toolRule({ pages = true, image = false } = {}) {
     `Never run shell commands, write files or start ${image ? "any other subagent" : "subagents"}: ${NO_PERMISSION}`
   ].join(" ");
 }
-// The oldest agy that every run needs. The hook (matcher "*" and its path
-// checks) was tested from 1.4.3, but before 1.4.7 agy did not load hooks when
+// The oldest agy that every run needs. Before 1.4.7 agy did not load hooks when
 // the user signs in with Application Default Credentials (AGY_ADC_AUTH), so an
-// older agy could run with no gate and no warning.
-export const MIN_HOOK_AGY_VERSION = [1, 4, 7];
+// older agy could run with no gate and no warning. Every run passes --settings
+// (see agy-runner.mjs), which was tested only on 1.5.7.
+export const MIN_HOOK_AGY_VERSION = [1, 5, 7];
 // The newest agy that this plugin was tested on, with tests/smoke-agy.mjs.
 // /gemini:setup warns on a newer one, so that someone runs the smoke test and
 // then raises this number.
-export const TESTED_AGY_VERSION = [1, 5, 0];
+export const TESTED_AGY_VERSION = [1, 5, 7];
 const SMOKE_TEST = fileURLToPath(new URL("../tests/smoke-agy.mjs", import.meta.url));
 
 // -1, 0 or 1 as the x.y.z in `version` is below, at or above `v`; null when
@@ -226,7 +226,7 @@ function copyRegularFile(file, dest, label) {
 // (`-high`) is part of the slug; agy also has a separate `--effort` flag we do
 // not use. Keep these in sync with `agy models`; `/gemini:setup` checks them.
 export const PRIMARY_REVIEW_MODEL = "gemini-4-argon-high";
-export const DEFAULT_ASK_MODEL = "gemini-3.8-flash-medium";
+export const DEFAULT_ASK_MODEL = "gemini-4-hydrogen-medium";
 
 let runReviewImpl = realRunReview;
 /** Test-only hook: swap the transport so unit tests don't spawn agy. */
@@ -531,7 +531,7 @@ function listModels(cwd) {
 
 /**
  * Gemini quota from `agy --print=/usage --output-format=json`. Free; null on any failure.
- * agy reports "Gemini Models" (Flash) and "Gemini 4 Argon" as separate groups.
+ * agy reports "Gemini Models" (Hydrogen and Flash) and "Gemini 4 Argon" as separate groups.
  * Both names contain "Gemini", so each group is matched by name, never by order.
  * Argon has a weekly limit only; `argon` is null when agy does not report it.
  */

@@ -36,6 +36,7 @@ const MODELS_TSV = [
   "gemini-4-argon-low\tGemini 4 Argon (Low)",
   "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
   "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+  "gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)",
   "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
   "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)",
   ""
@@ -267,7 +268,7 @@ test("setup --json includes promptOk, modelStatus, per-model results and quota",
   assert.equal(parsed.modelStatus, "ok");
   assert.deepEqual(parsed.models.primary, { model: PRIMARY_REVIEW_MODEL, ok: true });
   assert.deepEqual(Object.keys(parsed.models), ["primary", "ask"]);
-  assert.deepEqual(parsed.models.ask, { model: "gemini-3.8-flash-medium", ok: true });
+  assert.deepEqual(parsed.models.ask, { model: "gemini-4-hydrogen-medium", ok: true });
   assert.deepEqual(parsed.quota, {
     weekly: { remainingPercent: 97, resetTime: "2026-10-11T07:37:02Z" },
     fiveHour: { remainingPercent: 99, resetTime: "2026-10-10T16:44:37Z" },
@@ -296,17 +297,17 @@ test("setup shows quota and model check even when the canary fails on auth", asy
 test("setup model check is degraded, not FAILED, when only the ask default model is missing", async () => {
   setRunReviewForTest(canaryOk);
   setRunCommandForTest(
-    fakeCommands({ models: MODELS_TSV.replace(/^gemini-3\.8-flash-medium\t.*\n/m, "") })
+    fakeCommands({ models: MODELS_TSV.replace(/^gemini-4-hydrogen-medium\t.*\n/m, "") })
   );
   const { out, exitCode, line } = await runSetup();
-  assert.match(line("Model check:"), /^Model check:   degraded, .*\/gemini:ask default 'gemini-3\.8-flash-medium' is not listed/);
+  assert.match(line("Model check:"), /^Model check:   degraded, .*\/gemini:ask default 'gemini-4-hydrogen-medium' is not listed/);
   assert.match(out, /Run `agy models`/);
   assert.doesNotMatch(out, /Ready\. Try/);
   assert.notEqual(exitCode, 1);
 
   const json = JSON.parse((await runSetup(["--json"])).out);
   assert.equal(json.modelStatus, "degraded");
-  assert.deepEqual(json.models.ask, { model: "gemini-3.8-flash-medium", ok: false });
+  assert.deepEqual(json.models.ask, { model: "gemini-4-hydrogen-medium", ok: false });
 });
 
 // Runs the hook the way agy does, from the hooks.json in the temp folder.
@@ -322,7 +323,7 @@ test("setup runs every agy call in one gated temp folder that allows no tool, an
   const decisions = {};
   setBinaryAvailableForTest((cmd, args, opts) => {
     cwds.add(opts?.cwd);
-    return { available: true, detail: "1.4.7" };
+    return { available: true, detail: "1.5.7" };
   });
   const commands = fakeCommands();
   setRunCommandForTest((cmd, args, opts) => {
@@ -368,13 +369,13 @@ test("setup refuses --cwd, because agy runs only in its gated temp folder", asyn
 
 test("setup warns, and still runs, when agy is newer than the tested version", async () => {
   setRunReviewForTest(canaryOk);
-  setBinaryAvailableForTest(() => ({ available: true, detail: "1.5.1" }));
+  setBinaryAvailableForTest(() => ({ available: true, detail: "1.5.8" }));
   const { out, exitCode } = await runSetup();
-  assert.match(out, /Warning: agy 1\.5\.1 is newer than 1\.5\.0, the version this plugin was tested on\. Run `node ".*smoke-agy\.mjs"`/);
+  assert.match(out, /Warning: agy 1\.5\.8 is newer than 1\.5\.7, the version this plugin was tested on\. Run `node ".*smoke-agy\.mjs"`/);
   assert.match(out, /Ready\. Try/);
   assert.notEqual(exitCode, 1);
   const json = JSON.parse((await runSetup(["--json"])).out);
-  assert.match(json.versionWarning, /newer than 1\.5\.0/);
+  assert.match(json.versionWarning, /newer than 1\.5\.7/);
   assert.equal(json.promptOk, true);
   const smoke = json.versionWarning.match(/node "(.*)"/)[1];
   assert.ok(fs.existsSync(smoke), "the warning names a smoke test that exists");
@@ -405,18 +406,18 @@ test("setup fails before any agy call on an agy older than the hook minimum or w
   setRunCommandForTest(() => {
     throw new Error("should not be called");
   });
-  for (const detail of ["1.4.6", "agy ok"]) {
+  for (const detail of ["1.5.6", "agy ok"]) {
     setBinaryAvailableForTest(() => ({ available: true, detail }));
     const { out, exitCode } = await runSetup();
     assert.equal(exitCode, 1, detail);
-    assert.match(out, /needs agy 1\.4\.7 or later.*agy update/, detail);
+    assert.match(out, /needs agy 1\.5\.7 or later.*agy update/, detail);
     const json = JSON.parse((await runSetup(["--json"])).out);
-    assert.match(json.nextSteps[0], /needs agy 1\.4\.7 or later/, detail);
+    assert.match(json.nextSteps[0], /needs agy 1\.5\.7 or later/, detail);
   }
 });
 
 test("setup --json has promptDetail and nextSteps when the canary reply is wrong", async () => {
-  setBinaryAvailableForTest(() => ({ available: true, detail: "1.4.7" }));
+  setBinaryAvailableForTest(() => ({ available: true, detail: "1.5.7" }));
   setRunReviewForTest(async (args) => ({ ...(await canaryOk(args)), text: "hello", response: "hello" }));
   const { out, exitCode } = await runSetup(["--json"]);
   assert.equal(exitCode, 1);
@@ -432,7 +433,7 @@ test("setup --json prints JSON also when agy is missing or the canary fails", as
   assert.equal(exitCode, 1);
   assert.equal(JSON.parse(out).agy.available, false);
 
-  setBinaryAvailableForTest(() => ({ available: true, detail: "1.4.7" }));
+  setBinaryAvailableForTest(() => ({ available: true, detail: "1.5.7" }));
   setRunReviewForTest(async () => {
     throw new AgyAuthError("agy is not signed in: unauthorized");
   });

@@ -17,7 +17,7 @@ Core constraint:
 
 Input handling:
 - Split the raw arguments into flags and the prompt. Flags are `--model <id>`, `--file <path>` (may repeat), `--dir <folder>` (may repeat), `--prompt-file <path>`, `--schema <file>`, `--image-out <folder>`, `--resume <conversation-id>`, `--json` and `--background`. Everything else is the prompt.
-- `--model` takes any model ID from `agy models`. The default is `gemini-3.8-flash-medium`.
+- `--model` takes any model ID from `agy models`. The default is `gemini-4-hydrogen-medium`.
 - `--dir` gives Gemini read access to a folder, such as a source tree. Gemini reads files in it only by full path: it cannot list or search the folder, and it runs no commands. So the prompt must name the files to read. It may repeat, and the folders can be anywhere. `--dir` and `--file` can be used together.
 - `--prompt-file <path>` reads the prompt from that file. Prompt text in the arguments goes before the file's text. A long file goes to Gemini in parts, and the argument text then goes last, so pass the question for a long document as argument text.
 - `--schema <file>` takes a JSON Schema file. The answer is then JSON that fits it, or the ask fails.
@@ -42,7 +42,7 @@ Foreground flow:
 - Set the `Bash` timeout to 600000 (10 minutes). `--timeout-ms 540000` gives the model 9 minutes, so a long run comes back marked as cut off before the `Bash` limit kills it.
 - Invoke with a quoted heredoc so the prompt is piped in literally (no shell expansion inside it):
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" ask --timeout-ms 540000 --model 'gemini-3.8-flash-high' --file '/Users/me/Bob'\''s notes.md' <<'GEMINI_EOF_7Q2KX9WM'
+node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" ask --timeout-ms 540000 --model 'gemini-4-hydrogen-high' --file '/Users/me/Bob'\''s notes.md' <<'GEMINI_EOF_7Q2KX9WM'
 <the prompt, verbatim>
 GEMINI_EOF_7Q2KX9WM
 ```
@@ -53,7 +53,7 @@ Background flow:
 - Launch with `Bash` in the background using the same heredoc form, without `--timeout-ms`:
 ```typescript
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" ask --model 'gemini-3.8-flash-high' --file '/Users/me/notes.md' <<'GEMINI_EOF_7Q2KX9WM'
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" ask --model 'gemini-4-hydrogen-high' --file '/Users/me/notes.md' <<'GEMINI_EOF_7Q2KX9WM'
 <the prompt, verbatim>
 GEMINI_EOF_7Q2KX9WM`,
   description: "Gemini ask",
