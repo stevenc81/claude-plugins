@@ -7,14 +7,19 @@ description: Use when the user types /orchestrate:conduct, asks for an agent tea
 
 Standing rules for multi-agent work. The conductor is this session: it plans the work, starts the teammates and checks their results. A teammate is any agent the conductor starts, on any vendor: Claude, Codex or Gemini. A calling skill is a skill that uses this skill, such as `self-improve:rounds`. Where the rules of a calling skill differ from this skill, the calling skill wins.
 
-The model facts, their sources, the reason for each choice in the table and the date they were checked are in `evidence.md` in this folder. If that date is more than 2 months old, or you see a model that the table does not name, tell the user once that the table may be out of date, and go on with it. Refresh the table only when the user asks: see "Refresh the evidence".
+The model facts, their sources, the reason for each choice in the table and the date they were checked are in `evidence.md` in this folder. If the date of the last full refresh is more than 2 months old, or you see a model that neither the table nor `evidence.md` names, tell the user once that the table may be out of date, and go on with it. Refresh the table only when the user asks: see "Refresh the evidence".
 
 ## Start procedure
 
 If the user's answer would change the work and you cannot find it yourself, ask first. Then follow these steps in order. Before you start a job that is not in the last plan, or after the user changes the shared context, do steps 1 and 2 again. A retry, or a move to the job's next model, is in the plan.
 
 1. Pick the model and effort for each job. Follow "Pick the model".
-2. Send the plan as the last message of your turn: the temp folder path, the context that teammates share in one block or "none", then a Markdown table, never a list, with one row per job and this header row: `| Job | Row in "Pick the model" | Model and effort | Next model | Waits for | Why |`. Next model follows "Results and retries" rule 4. Write "none" in Next model or Waits for when there is none. A plan in your reasoning does not count. Start no teammate until the user approves the plan.
+2. Send the plan as the last message of your turn. Write the plan itself only as Markdown tables, never as lists or paragraphs. Send it again in full each time it changes.
+   - First table: three rows, `| Temp folder | <path> |`, `| Shared context | <the block, or "none"> |` and `| Low-cost mode | <the vendors, or "off"> |`.
+   - Second table: one row per job, with this header row: `| Job | Row in "Pick the model" | Model and effort | Next model | Waits for | Why |`. Add a row for each step that you do yourself, with "Conductor" in Model and effort, and "none" in Row in "Pick the model" and in Next model.
+   - Keep each cell to one or two short sentences, except Shared context. Write the whole shared context block in its cell on one line.
+   - Next model follows "Results and retries" rule 4. Write "none" in Next model or Waits for when there is none.
+   - A plan in your reasoning does not count. Start no teammate until the user approves the plan.
 3. Paste the shared context block from the plan, word for word, into each prompt that needs it. Do not point teammates to a context file: teammates can change files in `<temp>`. For Gemini, a private document, or text from one, goes in `--file` or `--dir` of `/gemini:ask`. It never goes in a prompt or a `/gemini:review` (gemini plugin README, "The tool gate").
 4. Before you start a teammate, create the watchdog in "Watchdog" if none runs. Then start the teammates, with the brief in "Teammate prompts". Start every job that waits for nothing in one message. Start each other job when the jobs it waits for are done. Give jobs that run at the same time different paths to write.
 
@@ -31,7 +36,7 @@ If the user's answer would change the work and you cannot find it yourself, ask 
 3. For an independent check or a critic, use the first model in the check's own row (such as "Code review") whose vendor differs from the vendor that did the work.
 4. Split the work by strength, not evenly.
 5. If no row fits, use the nearest row.
-6. If a row says "no clear winner", or "No source" without naming another row, pick by tools. Claude teammates have the Claude Code tools, but a specialist has no MCP tools. Codex reads any file and runs code. Gemini searches the web and reads the files and folders you pass to it, but one ask cannot both open web pages and read files (gemini plugin README, "The tool gate"). Gemini runs no code or commands.
+6. A row that says "no clear winner", or "No source" without naming another row, names the model whose tools fit the usual job. If the job needs other tools, pick by tools. Claude teammates have the Claude Code tools, but a specialist has no MCP tools. Codex reads any file and runs code. Gemini searches the web and reads the files and folders you pass to it, but it cannot open web pages (gemini plugin README, "`/gemini:ask`"). Gemini runs no code or commands.
 7. If a job fails, follow "Results and retries".
 
 The table uses only the sources in `evidence.md`, "Sources used". A primary source decides a row. Secondary sources decide only a row with no primary source. Confidence:
@@ -58,15 +63,15 @@ In a tie, the first choice has the best score. If the row's boards disagree on t
 | Fact check of claims | Codex gpt-6-astra, high, with `--search` | Claude Opus 5.5, high | Low |
 | Web research across many sources | Codex gpt-6-astra, high, with `--search` | Claude Opus 5.5, high | Low |
 | Long documents or code over 100k tokens | Claude Opus 5.5, high | Gemini 4 Argon, high | No source |
-| Video or audio input | Gemini 3.8 Flash, medium. For long or dense video: Gemini 4 Argon, high. | None | No source |
-| Bulk simple work: extraction, classification, short summaries | Claude Haiku 5.5, low. Use medium for several steps. | Gemini 3.8 Flash, low. Use medium for several steps. | No source |
-| Speed-critical short answers | Claude Sonnet 5.5, low | Codex gpt-5.6-sol, low | Low |
+| Video or audio input | Gemini 4 Hydrogen, medium. For long or dense video: high. | None | No source |
+| Bulk simple work: extraction, classification, short summaries | Claude Haiku 5.5, low. Use medium for several steps. | Gemini 4 Hydrogen, low. Use medium for several steps. | No source |
+| Speed-critical short answers | Claude Sonnet 5.5, low | Gemini 4 Hydrogen, low | Low |
 
-Images and screenshots: use the model that already does the job. For object detection, use Gemini 4 Argon. Gemini (`/gemini:ask --image-out`) and Codex (its image tool, with `-s workspace-write`) make images.
+Images and screenshots: use the model that already does the job. For object detection or counting, use Gemini 4 Argon, high. Gemini (`/gemini:ask --image-out`) and Codex (its image tool, with `-s workspace-write`) make images.
 
 PDFs and documents: Claude reads PDFs. Gemini also reads charts that exist only as pixels. Codex needs the text, or page images passed with `-i`. Pick by the job.
 
-Use only the models in this section, each through its own vendor's tool (see "How to call each vendor"). Give Claude Haiku 5.5 and Gemini 3.8 Flash only short, one-shot jobs.
+Use only the models in this section, each through its own vendor's tool (see "How to call each vendor"). Give Claude Haiku 5.5 only short jobs.
 
 ## Effort
 
@@ -78,9 +83,10 @@ The table sets the effort for each job. Higher effort adds wait time fast. Chang
   - Never run Fable 5.2 at max. On ARC-AGI-2 and ARC-AGI-3, it scores lower at max than at xhigh.
 - Codex:
   - Use ultra only for work that splits into independent parts. No test shows that it helps the GPT-6 models.
-  - Always run gpt-6.1-terra at max: also when speed matters, and in "Low-cost mode". On Bug Hunt Bench, it fixes 40.7 bugs at max and 11.3 at xhigh.
+  - Always run gpt-6.1-terra at max: also when speed matters, and in "Low-cost mode". On Bug Hunt Bench, it fixes far fewer bugs at xhigh and below (evidence.md, "Effort").
 - Gemini:
   - Argon at medium scores close to high on Bug Hunt Bench. Low is behind. Do not use low for hard work.
+  - Never run Hydrogen below medium for speech in video, also when speed matters (gemini plugin README, "Media").
 - On any vendor, if speed matters more than quality, lower the effort by one step.
 
 ## Low-cost mode
@@ -89,7 +95,7 @@ Use low-cost mode only when the user asks for it, for one vendor or for all. Wri
 
 - Claude: lower the effort by one step. Leave a job at low as it is.
 - Codex: if the model is gpt-6-astra, move it to gpt-6.1-sol at the same effort. Leave gpt-6.1-terra as it is (see "Effort"). Else, lower the effort by one step. Leave a job at low as it is.
-- Gemini: move Argon from high to medium. Leave 3.8 Flash as it is.
+- Gemini: move Argon from high to medium. Leave Hydrogen as it is.
 
 The reasons are in `evidence.md`, "Plans, quotas and prices".
 
@@ -108,7 +114,7 @@ A new teammate does not see this conversation. Start every teammate prompt with 
 ## How to call each vendor
 
 - Claude: the Agent tool. Set both `model` (`opus`, `sonnet`, `haiku` or `fable`) and `effort` (low, medium, high, xhigh, max). If the specialists plugin is installed, follow its `delegate` skill to pick or create the specialist. Two specialists of one area that run at the same time can overwrite each other's memory: tell all but one of them in the brief not to write memory.
-- Codex, one job: only the conductor runs Codex (item 6 in "Teammate prompts"). In one Bash call, with the Bash tool's `run_in_background: true`, run `ps -o pgid=,lstart= -p $$ > '<temp>/<job>/pgid'; tee '<temp>/<job>/prompt.md' <<'<end>' | codex exec --skip-git-repo-check --json -C '<project>' -s <sandbox> -m <model> -c model_reasoning_effort=<effort> -o '<temp>/<job>/out.md' - > '<temp>/<job>/out.jsonl'`, then the prompt, then `<end>` on its own line. `tee` saves the prompt and gives Codex the same bytes. The `pgid` file holds the call's process group and the start time of its leader, the shell, for "Stop a Codex job". `out.md` gets only the final answer. The efforts are low, medium, high, xhigh, max and ultra. The Luna models stop at max.
+- Codex, one job: only the conductor runs Codex (item 6 in "Teammate prompts"). In one Bash call, with the Bash tool's `run_in_background: true`, run `ps -o pgid=,lstart= -p $$ > '<temp>/<job>/pgid'; tee '<temp>/<job>/prompt.md' <<'<end>' | codex exec --skip-git-repo-check --json -C '<project>' -s <sandbox> -m <model> -c model_reasoning_effort=<effort> -o '<temp>/<job>/out.md' - > '<temp>/<job>/out.jsonl'`, then the prompt, then `<end>` on its own line. `tee` saves the prompt and gives Codex the same bytes. The `pgid` file holds the call's process group and the start time of its leader, the shell, for "Stop a Codex job". `out.md` gets only the final answer. The efforts are low, medium, high, xhigh, max and ultra.
   - Make a new folder for each attempt: `<temp>/<job>/` for the first, then `<temp>/<job>-2/`, and so on. Keep all its files there. `<end>` is `EOF_` and 8 random capitals or digits, new for each call, and no line of the prompt may equal it. The quoted `<<'<end>'` keeps quotes, `$(...)` and backticks in the prompt from running in the shell. Never put the prompt in the command's arguments. Single-quote each path in a command, as shown, and write each `'` inside a path as `'\''`.
   - For a JSON answer, add `--output-schema '<temp>/<job>/schema.json'`.
   - Use `-s read-only` for reviews, research and checks that only read. In read-only, commands cannot write anywhere, not even `$TMPDIR`. So code that saves output, charts or caches fails. Use `-s workspace-write` for a job that runs such code or must change files. Then Codex can write inside the `-C` folder. If the job must write in its `<temp>` folder, add `--add-dir '<temp>/<job>'`.
@@ -119,11 +125,11 @@ A new teammate does not see this conversation. Start every teammate prompt with 
   - Pass images with `-i '<file>'`.
   - If a model name fails, check `~/.codex/models_cache.json`.
 - Do not use the `codex:codex-rescue` agent or the `/codex:*` commands for teammates. The agent cannot set max or ultra, may rewrite the prompt, and resumes only "the last" task. Only the user can run `/codex:review` and `/codex:adversarial-review`.
-- Gemini: always pass `--model`, with the effort from the plan. The IDs are `gemini-4-argon-<effort>` and `gemini-3.8-flash-<effort>`, with low, medium or high.
+- Gemini: always pass `--model`, with the effort from the plan. The IDs are `gemini-4-argon-<effort>`, with low, medium or high, and `gemini-4-hydrogen-<effort>`, with low, medium, high or xhigh.
   - Run the `/gemini:*` commands with the Skill tool (`gemini:ask`, `gemini:review`). Item 6 in "Teammate prompts" says which ones a teammate runs.
-  - Fact check: `/gemini:review --model gemini-4-argon-<effort> [focus]`. Give the text to check in the same message. For text from a private document, follow step 3 of "Start procedure".
+  - Fact check in "Checking a thesis": `/gemini:review --model gemini-4-argon-<effort> [focus]`. Give the text to check in the same message. For text from a private document, follow step 3 of "Start procedure".
   - Other jobs: write the prompt to `<temp>/<job>/prompt.md`. Then run `/gemini:ask --background --model <id> --prompt-file <temp>/<job>/prompt.md`.
-  - The gemini plugin's README holds the other rules: files and folders (`--file`, `--dir`), follow-ups (`--resume`), media formats and sizes, JSON answers (`--schema`), images (`--image-out`), the prompt cap, the review cap, and how to let Gemini open web pages.
+  - The gemini plugin's README holds the other rules: files and folders (`--file`, `--dir`), follow-ups (`--resume`), media formats and sizes, JSON answers (`--schema`), images (`--image-out`), the prompt cap and the review cap.
 
 ### Codex, a follow-up
 
@@ -193,7 +199,7 @@ Do this only when the user asks. The full findings of the last refresh are not k
 
 1. Read numbers only from the sources in `evidence.md`, "Sources used". Read each source as its row says. Do not add, drop or re-score a source unless the user asks.
 2. If a used source shows a sign that it now fails one of the tests in step 5, such as a new sponsor or no more intervals, tell the user. Change its verdict only if the user agrees.
-3. Read the numbers with two readers on two vendors. Give one Gemini ask at most 6 sources: an ask with 13 sources hit the 20-minute limit. Test the tools locally.
+3. Read the numbers with two readers, one on Claude and one on Codex: Gemini cannot open web pages ("Pick the model" rule 6). Test the tools locally.
 4. When the readers disagree, check the fact yourself. Before a quote changes a verdict or a row, find the quote on the page yourself: a reader once quoted a sentence that the page does not have.
 5. To add a source, when the user asks, score it against these 5 tests. A company with several boards counts as one source, but a board can differ from the rest.
    1. Independence: the operator does not sell a model in the table, does not rank its own product, and is not paid by a model maker to test its models or for evaluation, data or training work. A paid test fails, also when no lab is named.
