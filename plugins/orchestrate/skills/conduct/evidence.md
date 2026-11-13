@@ -204,4 +204,4 @@ Each company counts once here (SKILL.md, "Refresh the evidence", step 5).
 - Fable 5.2, Terra, Sonnet, Haiku and Hydrogen are not on MathArena.
 - Roboflow: whether its test set is private is not stated.
 - Speed: AA measures each vendor's API. The time that `agy`, `codex exec` or a Claude Code teammate adds is not measured.
-- Tool versions on 2026-11-13: `agy` 1.5.7 and Codex 0.167.2. On `agy` 1.5.7, only the tests in the gemini plugin README ran. The compaction test in "Long context and media" ran on 2026-10-20. Most `codex exec` tests ran on 0.163.0 and 0.164.0.
+- Tool versions on 2026-11-13: `agy` 1.5.7 and Codex 0.169.0. On `agy` 1.5.7, only the tests in the gemini plugin README ran. On Codex 0.169.0, one smoke test passed: `exec` with `--output-schema`, `resume` with the access flags before it, `--search`, and the permission profile in `codex sandbox`. The compaction test in "Long context and media" ran on 2026-10-20. Most `codex exec` tests ran on 0.163.0 and 0.164.0.
