@@ -53,11 +53,11 @@ In a tie, the first choice has the best score. If the row's boards disagree on t
 | Hard coding, large refactor | Claude Fable 5.2, high | Codex gpt-6.2-astra, xhigh | Low |
 | Routine coding with a clear scope | Claude Sonnet 5.5, medium | Codex gpt-6.2-astra, medium | Low |
 | Shell, infra and deploy work | Claude Opus 5.5, xhigh | Codex gpt-6.1-terra, max | Low |
-| Debugging, root cause | Claude Fable 5.2, max | Codex gpt-6-astra, max | Medium |
-| Code review | Claude Fable 5.2, max | Codex gpt-6-astra, max | No source: use the Debugging row |
-| Front-end and web UI | Claude Fable 5.2, xhigh | Codex gpt-6-astra, max | Low |
+| Debugging, root cause | Claude Fable 5.2, max | Codex gpt-6.2-astra, max | Medium |
+| Code review | Claude Fable 5.2, max | Codex gpt-6.2-astra, max | No source: use the Debugging row |
+| Front-end and web UI | Claude Fable 5.2, xhigh | Codex gpt-6.2-astra, max | Low |
 | Math | Codex gpt-6.1-sol, max | Claude Opus 5.5, high | Medium |
-| Scientific or data research that runs code | Claude Fable 5.2, xhigh | Codex gpt-6-astra, xhigh | Medium |
+| Scientific or data research that runs code | Claude Fable 5.2, xhigh | Codex gpt-6.2-astra, xhigh | Medium |
 | Analysis, reports, documents | Claude Opus 5.5, high | Gemini 4 Argon, high | Low: no clear winner |
 | Judgment, planning, critique | Claude Fable 5.2, high | Gemini 4 Argon, high | Low: no clear winner |
 | Fact check of claims | Codex gpt-6.1-sol, high, with `--search` | Claude Opus 5.5, high | No source: use the Web research row |
@@ -93,7 +93,7 @@ The table sets the effort for each job. Higher effort adds wait time fast. Chang
 Use low-cost mode only when the user asks for it, for one vendor or for all. Write it in the plan. It stays on until the user ends it. Apply it once to each model choice on that vendor, after the other rules, also to a next model and to the checks in "Checking a thesis". A retry keeps the changed choice. Low-cost mode keeps the vendor:
 
 - Claude: lower the effort by one step. Leave a job at low as it is.
-- Codex: if the model is gpt-6-astra, move it to gpt-6.1-sol at the same effort. Leave gpt-6.1-terra as it is (see "Effort"). Else, lower the effort by one step. Leave a job at low as it is.
+- Codex: leave gpt-6.1-terra as it is (see "Effort"). Else, lower the effort by one step. Leave a job at low as it is.
 - Gemini: move Argon from high to medium. Leave Hydrogen as it is.
 
 The reasons are in `evidence.md`, "Plans, quotas and prices".
