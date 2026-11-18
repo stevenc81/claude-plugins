@@ -39,7 +39,7 @@ If the user's answer would change the work and you cannot find it yourself, ask 
 6. A row that says "no clear winner", or "No source" without naming another row, names the model whose tools fit the usual job. If the job needs other tools, pick by tools. Claude teammates have the Claude Code tools, but a specialist has no MCP tools. Codex reads any file and runs code. Gemini searches the web and reads the files and folders you pass to it, but it cannot open web pages (gemini plugin README, "`/gemini:ask`"). Gemini runs no code or commands.
 7. If a job fails, follow "Results and retries".
 
-The table uses only the sources in `evidence.md`, "Sources used". A primary source decides a row. Secondary sources decide only a row with no primary source. Confidence:
+The table uses only the sources in `evidence.md`, "Sources used". A primary source decides a row. Secondary sources decide a row only when it has no primary source. They also rank a model that the row's deciding board does not list. Confidence:
 
 - High: a primary source puts the first choice ahead, and the intervals do not overlap.
 - Medium: a primary source, but the top models tie.
@@ -50,24 +50,24 @@ In a tie, the first choice has the best score. If the row's boards disagree on t
 
 | Job | First choice | Second choice | Confidence |
 |---|---|---|---|
-| Hard coding, large refactor | Claude Opus 5.5, xhigh | Codex gpt-6-astra, xhigh | Low |
-| Routine coding with a clear scope | Claude Sonnet 5.5, medium | Codex gpt-6-astra, medium | Low |
+| Hard coding, large refactor | Claude Fable 5.2, high | Codex gpt-6.2-astra, xhigh | Low |
+| Routine coding with a clear scope | Claude Sonnet 5.5, medium | Codex gpt-6.2-astra, medium | Low |
 | Shell, infra and deploy work | Claude Opus 5.5, xhigh | Codex gpt-6.1-terra, max | Low |
-| Debugging, root cause | Claude Sonnet 5.5, max | Codex gpt-6-astra, max | Medium |
-| Code review | Claude Sonnet 5.5, max | Codex gpt-6-astra, max | No source: use the Debugging row |
-| Front-end and web UI | Claude Opus 5.5, max | Codex gpt-6-astra, max | Low |
+| Debugging, root cause | Claude Fable 5.2, max | Codex gpt-6-astra, max | Medium |
+| Code review | Claude Fable 5.2, max | Codex gpt-6-astra, max | No source: use the Debugging row |
+| Front-end and web UI | Claude Fable 5.2, xhigh | Codex gpt-6-astra, max | Low |
 | Math | Codex gpt-6.1-sol, max | Claude Opus 5.5, high | Medium |
-| Scientific or data research that runs code | Codex gpt-6-astra, xhigh | Claude Fable 5.2, high | Low |
+| Scientific or data research that runs code | Claude Fable 5.2, xhigh | Codex gpt-6-astra, xhigh | Medium |
 | Analysis, reports, documents | Claude Opus 5.5, high | Gemini 4 Argon, high | Low: no clear winner |
-| Judgment, planning, critique | Claude Opus 5.5, high | Gemini 4 Argon, high | Low: no clear winner |
-| Fact check of claims | Codex gpt-6-astra, high, with `--search` | Claude Opus 5.5, high | Low |
-| Web research across many sources | Codex gpt-6-astra, high, with `--search` | Claude Opus 5.5, high | Low |
+| Judgment, planning, critique | Claude Fable 5.2, high | Gemini 4 Argon, high | Low: no clear winner |
+| Fact check of claims | Codex gpt-6.1-sol, high, with `--search` | Claude Opus 5.5, high | No source: use the Web research row |
+| Web research across many sources | Codex gpt-6.1-sol, high, with `--search` | Claude Opus 5.5, high | Low |
 | Long documents or code over 100k tokens | Claude Opus 5.5, high | Gemini 4 Argon, high | No source |
 | Video or audio input | Gemini 4 Hydrogen, medium. For long or dense video: high. | None | No source |
 | Bulk simple work: extraction, classification, short summaries | Claude Haiku 5.5, low. Use medium for several steps. | Gemini 4 Hydrogen, low. Use medium for several steps. | No source |
-| Speed-critical short answers | Claude Sonnet 5.5, low | Gemini 4 Hydrogen, low | Low |
+| Speed-critical short answers | Claude Sonnet 5.5, low | Codex gpt-6.2-sol, low | Low |
 
-Images and screenshots: use the model that already does the job. For object detection or counting, use Gemini 4 Argon, high. Gemini (`/gemini:ask --image-out`) and Codex (its image tool, with `-s workspace-write`) make images.
+Images and screenshots: use the model that already does the job. Gemini (`/gemini:ask --image-out`) and Codex (its image tool, with `-s workspace-write`) make images.
 
 PDFs and documents: Claude reads PDFs. Gemini also reads charts that exist only as pixels. Codex needs the text, or page images passed with `-i`. Pick by the job.
 
@@ -80,10 +80,9 @@ The table sets the effort for each job. Higher effort adds wait time fast. Chang
 - Claude:
   - If a job will run over 30 minutes, raise it to xhigh if it is lower. Anthropic advises this.
   - Do not raise a job to max, except where the table sets max, or to retry a job that failed at xhigh.
-  - Never run Fable 5.2 at max. On ARC-AGI-2 and ARC-AGI-3, it scores lower at max than at xhigh.
 - Codex:
   - Use ultra only for work that splits into independent parts. No test shows that it helps the GPT-6 models.
-  - Always run gpt-6.1-terra at max: also when speed matters, and in "Low-cost mode". On Bug Hunt Bench, it fixes far fewer bugs at xhigh and below (evidence.md, "Effort").
+  - Always run gpt-6.1-terra at max: also when speed matters, and in "Low-cost mode". On Bug Hunt Bench, it fixes far fewer bugs at xhigh and below (evidence.md, "Bug Hunt Bench").
 - Gemini:
   - Argon at medium scores close to high on Bug Hunt Bench. Low is behind. Do not use low for hard work.
   - Never run Hydrogen below medium for speech in video, also when speed matters (gemini plugin README, "Media").
